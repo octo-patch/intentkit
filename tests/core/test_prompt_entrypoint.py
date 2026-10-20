@@ -24,13 +24,11 @@ def _wechat_agent() -> Agent:
         name="WeChat Agent",
         description="A test agent",
         model="gpt-4o",
-        deployed_at=now,
         updated_at=now,
         created_at=now,
         owner="user_1",
-        tools={},
-        prompt="You are a helper.",
-        temperature=0.7,
+        tools=None,
+        system_prompt="You are a helper.",
         visibility=AgentVisibility.PRIVATE,
         public_info_updated_at=now,
     )
@@ -48,7 +46,7 @@ async def test_wechat_entrypoint_prompt_advertises_markdown(monkeypatch):
         get_agent=lambda: agent,
         chat_id="chat-1",
         entrypoint=AuthorType.WECHAT,
-        is_private=True,
+        is_own_team=True,
     )
 
     result = await build_entrypoint_prompt(agent, context)

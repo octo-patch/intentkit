@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, Numeric, String, func
+from sqlalchemy import Boolean, DateTime, Float, Integer, Numeric, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,99 +27,36 @@ class AgentUserInputColumns:
         nullable=True,
         comment="Picture of the agent",
     )
-    purpose: Mapped[str | None] = mapped_column(
+    description: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
-        comment="Purpose or role of the agent",
+        comment="Short public summary of the agent, shown in listings and sub-agent references",
     )
-    personality: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Personality traits of the agent",
-    )
-    principles: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Principles or values of the agent",
-    )
-
     # AI model configuration fields from AgentCore
     model: Mapped[str] = mapped_column(
         String,
         nullable=False,
         comment="AI model identifier to be used by this agent for processing requests.",
     )
-    prompt: Mapped[str | None] = mapped_column(
+    reasoning_effort: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
-        comment="Base system prompt that defines the agent's behavior and capabilities",
+        comment="Reasoning/thinking effort (none/minimal/low/medium/high/xhigh/max); NULL follows the model default.",
     )
-    prompt_append: Mapped[str | None] = mapped_column(
-        String,
+    system_prompt: Mapped[str | None] = mapped_column(
+        Text,
         nullable=True,
-        comment="Additional system prompt that has higher priority than the base prompt",
+        comment="System prompt that defines the agent's purpose, personality, principles, and behavior",
     )
-    temperature: Mapped[float | None] = mapped_column(
-        Float,
-        nullable=True,
-        default=0.7,
-        comment="Controls response randomness (0.0~2.0). Higher values increase creativity but may reduce accuracy. For rigorous tasks, use lower values.",
-    )
-    frequency_penalty: Mapped[float | None] = mapped_column(
-        Float,
-        nullable=True,
-        default=0.0,
-        comment="Controls repetition in responses (-2.0~2.0). Higher values reduce repetition, lower values allow more repetition.",
-    )
-    presence_penalty: Mapped[float | None] = mapped_column(
-        Float,
-        nullable=True,
-        default=0.0,
-        comment="Controls topic adherence (-2.0~2.0). Higher values allow more topic deviation, lower values enforce stricter topic adherence.",
-    )
-
-    # Wallet and network configuration fields from AgentCore
-    wallet_provider: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Provider of the agent's wallet",
-    )
-    readonly_wallet_address: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Readonly wallet address of the agent",
-    )
-    # Note: Float is used here for historical reasons. Consider migrating to
-    # Numeric(22, 4) for better precision if a schema migration is planned.
-    weekly_spending_limit: Mapped[float | None] = mapped_column(
-        Float,
-        nullable=True,
-        comment="Weekly spending limit in USDC when wallet_provider is safe",
-    )
-    network_id: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        default="base-mainnet",
-        comment="Network identifier",
-    )
-
     # Tools configuration from AgentCore
-    tools: Mapped[dict[str, Any] | None] = mapped_column(
+    tools: Mapped[list[str] | None] = mapped_column(
         JSONB(),
         nullable=True,
-        comment="Dict of tools and their corresponding configurations",
+        comment="List of enabled tool names",
     )
 
     search_internet: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, comment="Enable LLM native internet search"
-    )
-    super_mode: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True, comment="Enable super mode with higher recursion limit"
-    )
-    enable_todo: Mapped[bool | None] = mapped_column(
-        Boolean,
-        nullable=True,
-        comment="Enable todo list middleware for task planning and tracking",
     )
     enable_activity: Mapped[bool | None] = mapped_column(
         Boolean,
@@ -130,11 +67,6 @@ class AgentUserInputColumns:
         Boolean,
         nullable=True,
         comment="Enable post tools (create post, get post, recent posts)",
-    )
-    enable_long_term_memory: Mapped[bool | None] = mapped_column(
-        Boolean,
-        nullable=True,
-        comment="Enable long-term memory for the agent",
     )
     sub_agents: Mapped[list[str] | None] = mapped_column(
         JSONB(),
@@ -262,11 +194,6 @@ class AgentTable(Base, AgentUserInputColumns):
     )
 
     # Fields moved from AgentUserInputColumns that are no longer in AgentUserInput
-    description: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Description of the agent, for public view, not contained in prompt",
-    )
     external_website: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
@@ -311,11 +238,6 @@ class AgentTable(Base, AgentUserInputColumns):
         JSONB(),
         nullable=True,
         comment="Public extra data of the agent",
-    )
-    deployed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-        comment="Timestamp when the agent was deployed",
     )
     public_info_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),

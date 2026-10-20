@@ -9,11 +9,11 @@ from langchain_core.tools.base import ToolException
 from pydantic import BaseModel, Field
 from web3 import Web3
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.pancakeswap.base import PancakeSwapBaseTool
 from intentkit.tools.pancakeswap.constants import (
     MASTERCHEF_V3_ABI,
     MASTERCHEF_V3_ADDRESSES,
-    NETWORK_TO_CHAIN_ID,
     POSITION_MANAGER_ABI,
     POSITION_MANAGER_ADDRESS,
 )
@@ -30,6 +30,7 @@ UINT128_MAX = (1 << 128) - 1
 class PancakeSwapRemoveLiquidityInput(BaseModel):
     """Input for PancakeSwap remove liquidity."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_id: int = Field(description="NFT position ID to remove liquidity from")
     percentage: float = Field(
         default=100.0,
@@ -45,6 +46,8 @@ class PancakeSwapRemoveLiquidity(PancakeSwapBaseTool):
     """Remove liquidity from a PancakeSwap V3 position."""
 
     name: str = NAME
+    title: str = "Remove Liquidity"
+    team_only: bool = True
     description: str = (
         "Remove liquidity from a PancakeSwap V3 position. "
         "Auto-unstakes from MasterChef V3 farm if staked. "
@@ -55,28 +58,20 @@ class PancakeSwapRemoveLiquidity(PancakeSwapBaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_id: int,
         percentage: float = 100.0,
         slippage: float = 0.5,
         **kwargs: Any,
     ) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
-
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"PancakeSwap not supported on {network_id}. "
-                    f"Supported: {', '.join(NETWORK_TO_CHAIN_ID.keys())}"
-                )
+            wallet = await self.get_unified_wallet(wallet_address)
+            chain_id = self._resolve_chain_id(wallet.network_id)
 
             if not 1 <= percentage <= 100:
                 raise ToolException("Percentage must be between 1 and 100")
 
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
+            w3 = wallet.w3
             wallet_address = Web3.to_checksum_address(wallet.address)
 
             pm_address = Web3.to_checksum_address(POSITION_MANAGER_ADDRESS)
@@ -114,12 +109,11 @@ class PancakeSwapRemoveLiquidity(PancakeSwapBaseTool):
                         cake_reward = await mc.functions.pendingCake(token_id).call()
 
                         # Remove from persisted staked list
-                        await self._remove_staked_token_id(token_id)
+                        await self._remove_staked_token_id(token_id, wallet_address)
                 except Exception:
                     if was_staked:
                         raise
                     # Not staked in MasterChef, continue
-                    pass
 
             # Get position details
             pos_info = await pm.functions.positions(token_id).call()
@@ -174,7 +168,7 @@ class PancakeSwapRemoveLiquidity(PancakeSwapBaseTool):
                     )
                     burn_receipt = await wallet.wait_for_receipt(burn_tx)
                     burned = burn_receipt.get("status", 0) == 1
-                except Exception:
+                except Exception:  # noqa: S110 - best-effort step; outcome is reflected in the result
                     pass
 
             # Format result
@@ -204,14 +198,13 @@ class PancakeSwapRemoveLiquidity(PancakeSwapBaseTool):
         except Exception as e:
             raise ToolException(f"Remove liquidity failed: {e!s}")
 
-    async def _remove_staked_token_id(self, token_id: int) -> None:
-        """Remove a token ID from the persisted staked list."""
-        staked_data = await self.get_agent_tool_data("staked_token_ids")
+    async def _remove_staked_token_id(self, token_id: int, wallet_address: str) -> None:
+        """Remove a token ID from the persisted staked list (per wallet)."""
+        staked_key = f"staked_token_ids:{wallet_address.lower()}"
+        staked_data = await self.get_agent_tool_data(staked_key)
         if staked_data and "token_ids" in staked_data:
             token_ids = [tid for tid in staked_data["token_ids"] if tid != token_id]
             if token_ids:
-                await self.save_agent_tool_data(
-                    "staked_token_ids", {"token_ids": token_ids}
-                )
+                await self.save_agent_tool_data(staked_key, {"token_ids": token_ids})
             else:
-                await self.delete_agent_tool_data("staked_token_ids")
+                await self.delete_agent_tool_data(staked_key)

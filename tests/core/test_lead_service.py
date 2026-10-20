@@ -31,15 +31,13 @@ def _mock_agent_row(
     row.name = name
     row.description = "desc"
     row.model = "gpt-4o"
-    row.prompt = "You are helpful."
+    row.system_prompt = "You are helpful."
     row.tools = {}
-    row.temperature = 0.7
     row.owner = "owner-1"
     row.visibility = "private"
     now = datetime.now()
     row.created_at = now
     row.updated_at = now
-    row.deployed_at = now
     row.archived_at = None
     row.public_info_updated_at = now
     return row

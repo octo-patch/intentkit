@@ -1,8 +1,6 @@
 import asyncio
-import importlib
 import logging
 from datetime import UTC, datetime
-from typing import TypedDict
 
 from fastapi import (
     APIRouter,
@@ -14,24 +12,21 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import PlainTextResponse
-from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from yaml import safe_load
 
-from intentkit.clients.twitter import unlink_twitter
 from intentkit.config.db import get_db, get_session
 from intentkit.core.agent import (
     backfill_agent_avatar,
     create_agent,
-    deploy_agent,
     get_agent_by_id_or_slug,
     override_agent,
     patch_agent,
 )
-from intentkit.core.agent import (
-    get_agent as get_agent_by_id,
+from intentkit.core.agent.publish import (
+    ensure_not_referenced_by_public_agent,
+    ensure_sub_agents_public,
+    is_public_visibility,
 )
 from intentkit.core.lead import invalidate_lead_cache
 from intentkit.core.template import render_agent
@@ -43,7 +38,6 @@ from intentkit.models.agent import (
     AgentUpdate,
 )
 from intentkit.models.agent_data import AgentData, AgentDataTable
-from intentkit.tools import __all__ as toolsets
 from intentkit.utils.error import IntentKitAPIError
 
 from app.common.upload import validate_and_store_image
@@ -51,6 +45,21 @@ from app.common.upload import validate_and_store_image
 agent_router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+
+async def require_agent_by_id_or_slug(agent_id: str) -> Agent:
+    """Resolve an id-or-slug path parameter, 404ing when it matches nothing.
+
+    useAgentSlugRewrite means any `{agent_id}` path parameter reachable from
+    the frontend may carry a slug, while DB rows and core functions are
+    id-only — endpoints must resolve before touching either.
+    """
+    agent = await get_agent_by_id_or_slug(agent_id)
+    if not agent:
+        raise IntentKitAPIError(
+            status_code=404, key="NotFound", message="Agent not found"
+        )
+    return agent
 
 
 @agent_router.post(
@@ -110,7 +119,7 @@ async def create_agent_endpoint(
 )
 async def override_agent_endpoint(
     background_tasks: BackgroundTasks,
-    agent_id: str = Path(..., description="ID of the agent to update"),
+    agent_id: str = Path(..., description="ID or slug of the agent to update"),
     agent: AgentUpdate = Body(AgentUpdate, description="Agent update configuration"),
 ) -> Response:
     """Override an existing agent.
@@ -118,7 +127,7 @@ async def override_agent_endpoint(
     Use input to override agent configuration. If some fields are not provided, they will be reset to default values.
 
     **Path Parameters:**
-    * `agent_id` - ID of the agent to update
+    * `agent_id` - ID or slug of the agent to update
 
     **Request Body:**
     * `agent` - Agent update configuration
@@ -134,10 +143,11 @@ async def override_agent_endpoint(
     """
     picture_provided = "picture" in agent.model_fields_set
 
-    latest_agent, agent_data = await override_agent(agent_id, agent)
+    existing_agent = await require_agent_by_id_or_slug(agent_id)
+    latest_agent, agent_data = await override_agent(existing_agent.id, agent)
 
     if not picture_provided:
-        background_tasks.add_task(backfill_agent_avatar, agent_id)
+        background_tasks.add_task(backfill_agent_avatar, existing_agent.id)
 
     agent_response = await AgentResponse.from_agent(latest_agent, agent_data)
 
@@ -158,7 +168,7 @@ async def override_agent_endpoint(
 )
 async def patch_agent_endpoint(
     background_tasks: BackgroundTasks,
-    agent_id: str = Path(..., description="ID of the agent to patch"),
+    agent_id: str = Path(..., description="ID or slug of the agent to patch"),
     agent: AgentUpdate = Body(AgentUpdate, description="Agent patch configuration"),
 ) -> Response:
     """Patch an existing agent with partial updates.
@@ -167,7 +177,7 @@ async def patch_agent_endpoint(
     other fields will remain unchanged.
 
     **Path Parameters:**
-    * `agent_id` - ID of the agent to patch
+    * `agent_id` - ID or slug of the agent to patch
 
     **Request Body:**
     * `agent` - Agent patch configuration (only include fields to update)
@@ -184,17 +194,15 @@ async def patch_agent_endpoint(
     update_fields = agent.model_dump(exclude_unset=True)
     picture_explicitly_set = "picture" in update_fields
 
-    latest_agent, agent_data = await patch_agent(agent_id, agent)
+    existing_agent = await require_agent_by_id_or_slug(agent_id)
 
-    # Invalidate lead cache when purpose changes, so lead agent rebuilds sub-agents list
-    if "purpose" in update_fields:
-        invalidate_lead_cache(latest_agent.team_id or "system")
+    latest_agent, agent_data = await patch_agent(existing_agent.id, agent)
 
     # backfill_agent_avatar re-reads the row and short-circuits if picture is
     # already set, so we can schedule unconditionally whenever the caller
     # didn't hand us one and skip a hot-path DB round-trip here.
     if not picture_explicitly_set:
-        background_tasks.add_task(backfill_agent_avatar, agent_id)
+        background_tasks.add_task(backfill_agent_avatar, existing_agent.id)
 
     agent_response = await AgentResponse.from_agent(latest_agent, agent_data)
 
@@ -277,11 +285,7 @@ async def get_agent(
     * `IntentKitAPIError`:
         - 404: Agent not found
     """
-    agent = await get_agent_by_id_or_slug(agent_id)
-    if not agent:
-        raise IntentKitAPIError(
-            status_code=404, key="NotFound", message="Agent not found"
-        )
+    agent = await require_agent_by_id_or_slug(agent_id)
 
     # Get agent data
     agent_data = await AgentData.get(agent.id)
@@ -316,220 +320,12 @@ async def get_agent_editable(
     * `IntentKitAPIError`:
         - 404: Agent not found
     """
-    agent = await get_agent_by_id_or_slug(agent_id)
-    if not agent:
-        raise IntentKitAPIError(
-            status_code=404, key="NotFound", message="Agent not found"
-        )
+    agent = await require_agent_by_id_or_slug(agent_id)
 
     editable_agent = AgentUpdate.model_validate(agent)
     return Response(
         content=editable_agent.model_dump_json(),
         media_type="application/json",
-    )
-
-
-@agent_router.get(
-    "/agents/{agent_id}/export",
-    tags=["Agent"],
-    operation_id="export_agent",
-)
-async def export_agent(
-    agent_id: str = Path(..., description="ID of the agent to export"),
-) -> Response:
-    """Export agent configuration as YAML.
-
-    **Path Parameters:**
-    * `agent_id` - ID of the agent to export
-
-    **Returns:**
-    * `str` - YAML configuration of the agent
-
-    **Raises:**
-    * `IntentKitAPIError`:
-        - 404: Agent not found
-    """
-    agent = await get_agent_by_id(agent_id)
-    if not agent:
-        raise IntentKitAPIError(
-            status_code=404, key="NotFound", message="Agent not found"
-        )
-    # Ensure agent.tools is initialized
-    if agent.tools is None:
-        agent.tools = {}
-
-    # fill all toolsets
-    for category in toolsets:
-        try:
-            # Dynamically import the tool module
-            tool_module = importlib.import_module(f"intentkit.tools.{category}")
-
-            # Check if the module has a Config class and get_tools function
-            if hasattr(tool_module, "Config") and hasattr(tool_module, "get_tools"):
-                # Get or create the config for this category
-                category_config = agent.tools.get(category, {})
-
-                # Ensure 'enabled' field exists (required by ToolsetConfig)
-                if "enabled" not in category_config:
-                    category_config["enabled"] = False
-
-                # Ensure states dict exists
-                if "states" not in category_config:
-                    category_config["states"] = {}
-
-                # Get all available tool states from the module
-                available_tools = []
-                if hasattr(tool_module, "ToolStates") and hasattr(
-                    tool_module.ToolStates, "__annotations__"
-                ):
-                    available_tools = list(
-                        tool_module.ToolStates.__annotations__.keys()
-                    )
-                # Add missing tools with disabled state
-                for tool_name in available_tools:
-                    if tool_name not in category_config["states"]:
-                        category_config["states"][tool_name] = "disabled"
-
-                # Get all required fields from Config class and its base classes
-                config_class = tool_module.Config
-                # Get all base classes of Config
-                all_bases = [config_class]
-                for base in config_class.__mro__[1:]:
-                    if base is TypedDict or base is dict or base is object:
-                        continue
-                    all_bases.append(base)
-
-                # Collect all required fields from Config and its base classes
-                for base in all_bases:
-                    if hasattr(base, "__annotations__"):
-                        for field_name, field_type in base.__annotations__.items():
-                            # Skip fields already set or marked as NotRequired
-                            if field_name in category_config or "NotRequired" in str(
-                                field_type
-                            ):
-                                continue
-                            # Add default value based on type
-                            if field_name != "states":  # states already handled above
-                                if "str" in str(field_type):
-                                    category_config[field_name] = ""
-                                elif "bool" in str(field_type):
-                                    category_config[field_name] = False
-                                elif "int" in str(field_type):
-                                    category_config[field_name] = 0
-                                elif "float" in str(field_type):
-                                    category_config[field_name] = 0.0
-                                elif "list" in str(field_type) or "List" in str(
-                                    field_type
-                                ):
-                                    category_config[field_name] = []
-                                elif "dict" in str(field_type) or "Dict" in str(
-                                    field_type
-                                ):
-                                    category_config[field_name] = {}
-
-                # Update the agent's tools config
-                agent.tools[category] = category_config
-        except (ImportError, AttributeError):
-            # Skip if module import fails or doesn't have required components
-            pass
-    yaml_content = agent.to_yaml()
-    return Response(
-        content=yaml_content,
-        media_type="application/x-yaml",
-        headers={"Content-Disposition": f'attachment; filename="{agent_id}.yaml"'},
-    )
-
-
-@agent_router.put(
-    "/agents/{agent_id}/import",
-    tags=["Agent"],
-    operation_id="import_agent",
-    response_class=PlainTextResponse,
-)
-async def import_agent(
-    agent_id: str = Path(...),
-    file: UploadFile = File(
-        ..., description="YAML file containing agent configuration"
-    ),
-) -> str:
-    """Import agent configuration from YAML file.
-    Only updates existing agents, will not create new ones.
-
-    **Path Parameters:**
-    * `agent_id` - ID of the agent to update
-
-    **Request Body:**
-    * `file` - YAML file containing agent configuration
-
-    **Returns:**
-    * `str` - Success message
-
-    **Raises:**
-    * `IntentKitAPIError`:
-        - 400: Invalid YAML or agent configuration
-        - 404: Agent not found
-        - 500: Server error
-    """
-    # First check if agent exists
-    existing_agent = await get_agent_by_id(agent_id)
-    if not existing_agent:
-        raise IntentKitAPIError(
-            status_code=404, key="NotFound", message="Agent not found"
-        )
-
-    # Read and parse YAML
-    content = await file.read()
-    try:
-        yaml_data = safe_load(content)
-    except Exception as e:
-        raise IntentKitAPIError(
-            status_code=400, key="BadRequest", message=f"Invalid YAML format: {e}"
-        )
-
-    # Create Agent instance from YAML
-    try:
-        agent = AgentUpdate.model_validate(yaml_data)
-    except ValidationError as e:
-        raise IntentKitAPIError(400, "BadRequest", f"Invalid agent configuration: {e}")
-
-    # Get the latest agent from create_or_update
-    _ = await deploy_agent(agent_id, agent, "admin")
-
-    return "Agent import successful"
-
-
-@agent_router.put(
-    "/agents/{agent_id}/twitter/unlink",
-    tags=["OAuth"],
-    operation_id="unlink_twitter",
-    response_class=Response,
-)
-async def unlink_twitter_endpoint(
-    agent_id: str = Path(..., description="ID of the agent to unlink from X"),
-) -> Response:
-    """Unlink X from an agent.
-
-    **Path Parameters:**
-    * `agent_id` - ID of the agent to unlink from X
-
-    **Raises:**
-    * `IntentKitAPIError`:
-        - 404: Agent not found
-    """
-    # Check if agent exists
-    agent = await get_agent_by_id(agent_id)
-    if not agent:
-        raise IntentKitAPIError(404, "NotFound", "Agent not found")
-
-    # Call the unlink_twitter function from clients.twitter
-    agent_data = await unlink_twitter(agent_id)
-
-    agent_response = await AgentResponse.from_agent(agent, agent_data)
-
-    return Response(
-        content=agent_response.model_dump_json(),
-        media_type="application/json",
-        headers={"ETag": agent_response.etag()},
     )
 
 
@@ -562,26 +358,26 @@ async def upload_agent_picture(
     summary="Archive Agent",
 )
 async def archive_agent(
-    agent_id: str = Path(..., description="ID of the agent to archive"),
+    agent_id: str = Path(..., description="ID or slug of the agent to archive"),
 ) -> Response:
     """Archive an agent by setting archived_at timestamp.
 
     **Path Parameters:**
-    * `agent_id` - ID of the agent to archive
+    * `agent_id` - ID or slug of the agent to archive
 
     **Raises:**
     * `IntentKitAPIError`:
         - 404: Agent not found
         - 500: Database error
     """
-    # Check if agent exists
-    agent = await get_agent_by_id(agent_id)
-    if not agent:
-        raise IntentKitAPIError(404, "NotFound", "Agent not found")
+    agent = await require_agent_by_id_or_slug(agent_id)
+
+    # A sub-agent of a public agent cannot be archived while referenced.
+    await ensure_not_referenced_by_public_agent(agent.id, agent.slug)
 
     # Update archived_at in database
     async with get_session() as db:
-        result = await db.execute(select(AgentTable).where(AgentTable.id == agent_id))
+        result = await db.execute(select(AgentTable).where(AgentTable.id == agent.id))
         agent_row = result.scalar_one_or_none()
         if not agent_row:
             raise IntentKitAPIError(404, "NotFound", "Agent not found")
@@ -601,26 +397,31 @@ async def archive_agent(
     summary="Reactivate Agent",
 )
 async def reactivate_agent(
-    agent_id: str = Path(..., description="ID of the agent to reactivate"),
+    agent_id: str = Path(..., description="ID or slug of the agent to reactivate"),
 ) -> Response:
     """Reactivate an archived agent by clearing archived_at timestamp.
 
     **Path Parameters:**
-    * `agent_id` - ID of the agent to reactivate
+    * `agent_id` - ID or slug of the agent to reactivate
 
     **Raises:**
     * `IntentKitAPIError`:
         - 404: Agent not found
         - 500: Database error
     """
-    # Check if agent exists
-    agent = await get_agent_by_id(agent_id)
-    if not agent:
-        raise IntentKitAPIError(404, "NotFound", "Agent not found")
+    agent = await require_agent_by_id_or_slug(agent_id)
+
+    # Un-archiving a public agent revives its guest-facing call_agent
+    # surface: its sub-agents must all (still) be public.
+    if is_public_visibility(agent.visibility):
+        await ensure_sub_agents_public(
+            agent.sub_agents,
+            exclude={ref for ref in (agent.id, agent.slug) if ref},
+        )
 
     # Clear archived_at in database
     async with get_session() as db:
-        result = await db.execute(select(AgentTable).where(AgentTable.id == agent_id))
+        result = await db.execute(select(AgentTable).where(AgentTable.id == agent.id))
         agent_row = result.scalar_one_or_none()
         if not agent_row:
             raise IntentKitAPIError(404, "NotFound", "Agent not found")

@@ -7,7 +7,6 @@ from epyxid import XID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from intentkit.core.agent import get_agent
-from intentkit.models.agent_data import AgentData
 from intentkit.models.credit import (
     DEFAULT_PLATFORM_ACCOUNT_WITHDRAW,
     CreditAccount,
@@ -68,9 +67,8 @@ async def withdraw(
             status_code=400, key="AgentNoOwner", message="Agent has no owner"
         )
 
-    # Get agent wallet address
-    agent_data = await AgentData.get(agent.id)
-    agent_wallet_address = agent_data.evm_wallet_address if agent_data else None
+    # Agents no longer have an identity wallet; the field stays for history.
+    agent_wallet_address = None
 
     user_id = agent.owner
 

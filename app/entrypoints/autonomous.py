@@ -17,7 +17,12 @@ from intentkit.models.autonomous import (
     AutonomousExecutionStatus,
     AutonomousExecutionTrigger,
 )
-from intentkit.models.chat import AuthorType, ChatMessage, ChatMessageCreate
+from intentkit.models.chat import (
+    AUTONOMOUS_CHAT_PREFIX,
+    AuthorType,
+    ChatMessage,
+    ChatMessageCreate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +108,7 @@ async def run_autonomous_task(
     owner_user_id: str,
     task_id: str,
     prompt: str,
-    has_memory: bool = True,
+    _legacy_has_memory: object = None,
     target_agent_id: str | None = None,
     trigger: AutonomousExecutionTrigger = AutonomousExecutionTrigger.CRON,
     triggered_by: str | None = None,
@@ -125,8 +130,9 @@ async def run_autonomous_task(
             cron runs, the requesting member for manual runs).
         task_id: The ID of the autonomous task.
         prompt: The autonomous prompt to execute.
-        has_memory: Whether to retain conversation memory between runs. If False,
-            clears thread memory before execution.
+        _legacy_has_memory: Ignored. Positional slot kept so Redis-stored
+            scheduler jobs registered before the history-retention mode was
+            removed still invoke cleanly; drop after one release.
         target_agent_id: Optional agent to run directly; lead-orchestrated if None.
         trigger: How this run was triggered (cron or manual).
         triggered_by: User who triggered a manual run; None for cron runs.
@@ -136,7 +142,7 @@ async def run_autonomous_task(
 
     # The agent the run (and any error activity) is attributed to.
     effective_agent_id = target_agent_id or f"team-{team_id}"
-    chat_id = f"autonomous-{task_id}"
+    chat_id = f"{AUTONOMOUS_CHAT_PREFIX}{task_id}"
 
     message = ChatMessageCreate(
         id=str(XID()),
@@ -175,18 +181,14 @@ async def run_autonomous_task(
         logger.warning("Failed to record execution for task %s: %s", task_id, e)
 
     try:
-        # Clear thread memory if has_memory is False
-        if not has_memory:
-            try:
-                _ = await clear_thread_memory(effective_agent_id, chat_id)
-                logger.debug(
-                    f"Cleared thread memory for task {task_id} (has_memory=False)"
-                )
-            except Exception as e:
-                # Log the error but continue with execution
-                logger.warning(
-                    "Failed to clear thread memory for task %s: %s", task_id, e
-                )
+        # Every run starts from a clean thread: conversation history between
+        # runs is never retained (it burns tokens for little value). Tasks
+        # persist important cross-run facts via their cron memory scope.
+        try:
+            _ = await clear_thread_memory(effective_agent_id, chat_id)
+        except Exception as e:
+            # Log the error but continue with execution
+            logger.warning("Failed to clear thread memory for task %s: %s", task_id, e)
 
         resp: list[ChatMessage]
         if target_agent_id:
@@ -222,10 +224,7 @@ async def run_autonomous_task(
             await _record_error_activity(task_id, effective_agent_id, error_text)
 
     except Exception as e:
-        logger.error(
-            f"Error in autonomous task {task_id} for team {team_id}: {repr(e)}",
-            exc_info=True,
-        )
-        error_text = f"Autonomous task exception: {repr(e)}"
+        logger.exception(f"Error in autonomous task {task_id} for team {team_id}")
+        error_text = f"Autonomous task exception: {e!r}"
         await _finish_execution(execution, [], error_text)
         await _record_error_activity(task_id, effective_agent_id, error_text)

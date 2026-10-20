@@ -46,6 +46,7 @@ class GitHubSearch(GitHubBaseTool):
     """
 
     name: str = "github_search"
+    title: str = "GitHub Search"
     description: str = "Search GitHub for repositories, users, or code snippets."
     args_schema: ArgsSchema | None = GitHubSearchInput
 
@@ -172,10 +173,8 @@ class GitHubSearch(GitHubBaseTool):
             )
         except ToolException:
             raise
-        except Exception as e:
-            logger.error(
-                f"github_search.py: Error searching GitHub: {e}", exc_info=True
-            )
+        except Exception:
+            logger.exception("github_search.py: Error searching GitHub")
             raise ToolException(
                 "An error occurred while searching GitHub. Please try again later."
             )

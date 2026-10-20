@@ -3,8 +3,21 @@
 import logging
 
 from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
+
+from intentkit.utils.readiness import wait_until_ready
 
 logger = logging.getLogger(__name__)
+
+# Socket timeouts are set explicitly rather than inherited. redis-py 7 defaults
+# both to None (block forever), redis-py 8 to 5s; pinning them here keeps the
+# behaviour identical across that bump and bounds a hung connection. Every
+# command this service issues is a small key read/write -- there are no blocking
+# commands (BLPOP/BRPOP/XREAD) anywhere in the codebase -- so 5s is far above
+# the worst legitimate round trip.
+REDIS_SOCKET_TIMEOUT = 5.0
+REDIS_CONNECT_TIMEOUT = 5.0
 
 # Global Redis client instance
 _redis_client: Redis | None = None
@@ -18,6 +31,8 @@ async def init_redis(
     ssl: bool = False,
     encoding: str = "utf-8",
     decode_responses: bool = True,
+    socket_timeout: float = REDIS_SOCKET_TIMEOUT,
+    socket_connect_timeout: float = REDIS_CONNECT_TIMEOUT,
 ) -> Redis:
     """Initialize the Redis client.
 
@@ -29,6 +44,8 @@ async def init_redis(
         ssl: Whether to use SSL (default: False)
         encoding: Response encoding (default: utf-8)
         decode_responses: Whether to decode responses (default: True)
+        socket_timeout: Per-command socket timeout in seconds
+        socket_connect_timeout: Connection establishment timeout in seconds
 
     Returns:
         Redis: The initialized Redis client
@@ -41,7 +58,7 @@ async def init_redis(
 
     try:
         logger.info("Initializing Redis client at %s:%s", host, port)
-        _redis_client = Redis(
+        client = Redis(
             host=host,
             port=port,
             db=db,
@@ -49,11 +66,18 @@ async def init_redis(
             ssl=ssl,
             encoding=encoding,
             decode_responses=decode_responses,
+            socket_timeout=socket_timeout,
+            socket_connect_timeout=socket_connect_timeout,
         )
-        # Test the connection
-        await _redis_client.ping()  # pyright: ignore[reportGeneralTypeIssues]
+
+        # Test the connection. Services restart in arbitrary order, so Redis
+        # may still be booting; retry instead of failing the start.
+        await wait_until_ready(
+            "Redis", client.ping, (RedisConnectionError, RedisTimeoutError)
+        )
+        _redis_client = client
         logger.info("Redis client initialized successfully")
-        return _redis_client
+        return client
     except Exception as e:
         logger.error("Failed to initialize Redis client: %s", e)
         raise
@@ -104,13 +128,18 @@ async def check_heartbeat(redis_client: Redis, name: str) -> bool:
 
     key = f"intentkit:heartbeat:{name}"
     retries = 3
+    last_exc: Exception | None = None
 
     for attempt in range(retries):
         try:
             exists = await redis_client.exists(key)
             return bool(exists)
         except Exception as e:
-            logger.error(
+            # WARNING per attempt: transient blips must not reach the alert
+            # channel (which forwards ERROR+); only exhausting all retries is
+            # worth an alert.
+            last_exc = e
+            logger.warning(
                 "Error checking heartbeat for %s (attempt %s/%s): %s",
                 name,
                 attempt + 1,
@@ -120,6 +149,9 @@ async def check_heartbeat(redis_client: Redis, name: str) -> bool:
             if attempt < retries - 1:  # Don't sleep on the last attempt
                 await asyncio.sleep(5)  # Wait 5 seconds before retrying
 
+    logger.error(
+        "Heartbeat check for %s failed after %s attempts: %s", name, retries, last_exc
+    )
     return False
 
 

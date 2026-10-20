@@ -31,9 +31,7 @@ class EnsoBaseTool(IntentKitOnChainTool):
     """
 
     def get_main_tokens(self, context: AgentContext) -> list[str]:
-        tool_config = context.agent.tool_config(self.category)
-        if "main_tokens" in tool_config and tool_config["main_tokens"]:
-            return tool_config["main_tokens"]
+        """Per-agent main token configuration was removed; default to no extra tokens."""
         return []
 
     def get_api_token(self, context: AgentContext) -> str:
@@ -41,15 +39,17 @@ class EnsoBaseTool(IntentKitOnChainTool):
             raise ToolException("Enso API token is not configured")
         return config.enso_api_token
 
-    def resolve_chain_id(
-        self, context: AgentContext, chain_id: int | None = None
-    ) -> int:
+    def resolve_chain_id(self, chain_id: int | None, network_id: str) -> int:
         """
         Resolve the chain ID for the operation.
 
+        An explicit chain_id wins; otherwise the given network is mapped
+        to its chain ID.
+
         Args:
-            context: The tool context containing agent information.
             chain_id: Optional explicit chain ID.
+            network_id: Network used when no explicit chain ID is given
+                (a wallet's network, or the platform default).
 
         Returns:
             The resolved chain ID.
@@ -60,20 +60,17 @@ class EnsoBaseTool(IntentKitOnChainTool):
         if chain_id:
             return chain_id
 
-        agent = context.agent
         try:
-            network = resolve_supported_network(str(agent.network_id or ""))
+            network = resolve_supported_network(network_id)
         except ValueError as exc:  # pragma: no cover - defensive
-            raise ToolException(
-                f"Unsupported network configured for agent: {agent.network_id}"
-            ) from exc
+            raise ToolException(f"Unsupported wallet network: {network_id}") from exc
 
-        network_id = network_to_id.get(network)
-        if network_id is None:
+        resolved_id = network_to_id.get(network)
+        if resolved_id is None:
             raise ToolException(
-                f"Unable to determine chain id for network: {agent.network_id}"
+                f"Unable to determine chain id for network: {network_id}"
             )
-        return int(network_id)
+        return int(resolved_id)
 
     category: str = "enso"
 

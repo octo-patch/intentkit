@@ -16,8 +16,8 @@ from intentkit.config.db import get_session
 from intentkit.config.redis import get_redis
 from intentkit.core.agent import get_agent
 from intentkit.models.agent import Agent, AgentTable
-from intentkit.models.agent_data import AgentData
 from intentkit.utils.error import IntentKitAPIError
+from intentkit.wallets import list_agent_team_wallets
 from intentkit.wallets.web3 import get_async_web3_client
 
 logger = logging.getLogger(__name__)
@@ -146,23 +146,17 @@ async def _get_wallet_net_worth(wallet_address: str, network_id: str | None) -> 
 
 
 async def build_assets_list(
-    agent: Agent, agent_data: AgentData, web3_client: AsyncWeb3
+    agent: Agent, wallet_address: str, network_id: str, web3_client: AsyncWeb3
 ) -> list[Asset]:
     """Build the assets list based on network conditions and agent configuration."""
     assets: list[Asset] = []
-
-    if not agent_data or not agent_data.evm_wallet_address:
-        return assets
-
-    wallet_address = agent_data.evm_wallet_address
-    network_id: str | None = agent.network_id
 
     # ETH is always included
     eth_balance = await _get_eth_balance(web3_client, wallet_address)
     assets.append(Asset(symbol="ETH", balance=eth_balance))
 
-    if network_id and network_id.endswith("-mainnet"):
-        usdc_address = USDC_ADDRESSES.get(str(network_id))
+    if network_id.endswith("-mainnet"):
+        usdc_address = USDC_ADDRESSES.get(network_id)
         if usdc_address:
             usdc_balance = await _get_token_balance(
                 web3_client, wallet_address, usdc_address
@@ -205,19 +199,43 @@ async def agent_asset(agent_id: str) -> AgentAssets:
         cached_assets = AgentAssets.model_validate(cached_data)
         return cached_assets
 
-    agent_data = await AgentData.get(agent_id)
-    if not agent_data or not agent_data.evm_wallet_address:
-        assets_result = AgentAssets(net_worth="0", tokens=[])
-    elif not agent.network_id:
+    # Agents have no wallet of their own; aggregate over the team's wallets,
+    # each on its own default network.
+    wallets = await list_agent_team_wallets(agent)
+    funded = [w for w in wallets if w.evm_wallet_address]
+    if not funded:
         assets_result = AgentAssets(net_worth="0", tokens=[])
     else:
         try:
-            web3_client = get_async_web3_client(str(agent.network_id))
-            tokens = await build_assets_list(agent, agent_data, web3_client)
-            net_worth = await _get_wallet_net_worth(
-                agent_data.evm_wallet_address, str(agent.network_id)
+            merged: dict[str, Decimal] = {}
+            net_worth_total = Decimal(0)
+            for wallet in funded:
+                address = str(wallet.evm_wallet_address)
+                network_id = wallet.network
+                web3_client = get_async_web3_client(network_id)
+                tokens = await build_assets_list(
+                    agent, address, network_id, web3_client
+                )
+                for token in tokens:
+                    merged[token.symbol] = (
+                        merged.get(token.symbol, Decimal(0)) + token.balance
+                    )
+                net_worth = await _get_wallet_net_worth(address, network_id)
+                try:
+                    net_worth_total += Decimal(net_worth)
+                except Exception:
+                    logger.debug(
+                        "Ignoring unparsable net worth %r for wallet %s",
+                        net_worth,
+                        address,
+                    )
+            assets_result = AgentAssets(
+                net_worth=str(net_worth_total),
+                tokens=[
+                    Asset(symbol=symbol, balance=balance)
+                    for symbol, balance in merged.items()
+                ],
             )
-            assets_result = AgentAssets(net_worth=net_worth, tokens=tokens)
         except IntentKitAPIError:
             raise
         except Exception as exc:
@@ -238,7 +256,12 @@ async def agent_asset(agent_id: str) -> AgentAssets:
             await session.execute(
                 update(AgentTable)
                 .where(AgentTable.id == agent_id)
-                .values(assets=assets_payload)
+                .values(
+                    # Derived cache column: don't bump updated_at (executor
+                    # rebuilds and roster ordering key off it).
+                    assets=assets_payload,
+                    updated_at=AgentTable.updated_at,
+                )
             )
             await session.commit()
     except Exception as exc:  # pragma: no cover - db persistence path only
@@ -248,11 +271,11 @@ async def agent_asset(agent_id: str) -> AgentAssets:
 
 
 __all__ = [
-    "Asset",
-    "AgentAssets",
-    "USDC_ADDRESSES",
     "NATION_ADDRESS",
+    "USDC_ADDRESSES",
+    "AgentAssets",
+    "Asset",
+    "_get_wallet_net_worth",
     "agent_asset",
     "build_assets_list",
-    "_get_wallet_net_worth",
 ]

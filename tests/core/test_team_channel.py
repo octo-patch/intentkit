@@ -86,9 +86,30 @@ class TestValidateChannelConfig:
         with pytest.raises(ValidationError):
             _validate_channel_config("wechat", {"bot_token": "tok"})
 
+    def test_valid_lark_config(self):
+        _validate_channel_config("lark", {"tenant_key": "tk_1"})
+
+    def test_invalid_lark_config_missing_tenant_key(self):
+        with pytest.raises(ValidationError):
+            _validate_channel_config("lark", {})
+
+    def test_valid_slack_config(self):
+        _validate_channel_config(
+            "slack",
+            {"workspace_id": "T1", "bot_token": "xoxb-1"},
+        )
+
+    def test_invalid_slack_config_missing_bot_token(self):
+        with pytest.raises(ValidationError):
+            _validate_channel_config("slack", {"workspace_id": "T1"})
+
+    def test_invalid_slack_config_missing_workspace_id(self):
+        with pytest.raises(ValidationError):
+            _validate_channel_config("slack", {"bot_token": "xoxb-1"})
+
     def test_unknown_channel_type_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown channel type"):
-            _validate_channel_config("slack", {"key": "val"})
+            _validate_channel_config("discord", {"key": "val"})
 
 
 # ---------------------------------------------------------------------------
@@ -193,8 +214,8 @@ class TestRemoveTeamChannel:
         with patch(f"{MODULE}.get_session", return_value=ctx):
             await remove_team_channel("team1", "telegram")
 
-        # Two deletes: channel record + channel data
-        assert mock_db.execute.await_count == 2
+        # Three deletes: channel record + channel data + chat bindings
+        assert mock_db.execute.await_count == 3
         mock_db.commit.assert_awaited_once()
 
 

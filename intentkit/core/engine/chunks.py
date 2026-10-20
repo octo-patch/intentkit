@@ -1,9 +1,8 @@
 """Stream chunk handlers: persist model/tool messages and record expenses."""
 
-# pyright: reportImportCycles=false
-
 import logging
 import textwrap
+from datetime import UTC, datetime
 from typing import Any
 
 from epyxid import XID
@@ -19,15 +18,62 @@ from intentkit.core.engine.content import (
 )
 from intentkit.models.agent import Agent
 from intentkit.models.chat import (
+    DISPLAY_MESSAGE_ARG,
     AuthorType,
     ChatMessage,
     ChatMessageCreate,
     ChatMessageToolCall,
 )
-from intentkit.models.llm import LLMModelInfo, calculate_search_cost
-from intentkit.tools.base import get_tool_price
+from intentkit.models.llm import LLMModelInfo, calculate_search_cost, usd_to_credits
+from intentkit.tools.base import get_tool_price, take_tool_cost_usd
 
 logger = logging.getLogger(__name__)
+
+
+def _lift_tool_call(call: dict[str, Any]) -> ChatMessageToolCall:
+    """Base tool-call record from a model tool call.
+
+    The injected status line travels in the call args; lift it out of
+    ``parameters`` into its own field (see DISPLAY_MESSAGE_ARG).
+    """
+    parameters: dict[str, object] = dict(call["args"])
+    display_message = parameters.pop(DISPLAY_MESSAGE_ARG, None)
+    tool_call: ChatMessageToolCall = {
+        "id": call.get("id") or "",
+        "name": call["name"],
+        "parameters": parameters,
+    }
+    if isinstance(display_message, str) and display_message.strip():
+        tool_call["display_message"] = display_message.strip()
+    return tool_call
+
+
+def _build_pending_tool_message(
+    tool_calls: list[dict[str, Any]],
+    user_message: ChatMessage,
+    agent: Agent,
+) -> ChatMessage:
+    """Transient frame announcing that the step's tool calls started.
+
+    Yielded to live consumers before the tool node runs and never saved:
+    the persisted tool message(s) that follow carry the same tool call ids,
+    which is how consumers fold the results back into this frame.
+    """
+    return ChatMessage(
+        id=str(XID()),
+        agent_id=user_message.agent_id,
+        chat_id=user_message.chat_id,
+        user_id=user_message.user_id,
+        author_id=user_message.agent_id,
+        author_type=AuthorType.TOOL,
+        model=agent.model,
+        thread_type=user_message.thread_entrypoint,
+        reply_to=user_message.id,
+        message="",
+        tool_calls=[_lift_tool_call(call) for call in tool_calls],
+        pending=True,
+        created_at=datetime.now(UTC),
+    )
 
 
 async def handle_model_chunk(
@@ -70,12 +116,19 @@ async def handle_model_chunk(
             author_id=user_message.agent_id,
             author_type=AuthorType.THINKING,
             model=agent.model,
-            thread_type=user_message.author_type,
+            thread_type=user_message.thread_entrypoint,
             reply_to=user_message.id,
             message=thinking,
         )
         thinking_message = await thinking_message_create.save()
         messages_out.append(thinking_message)
+    if has_tools:
+        # Announce the calls before the tool node runs so live consumers can
+        # show the status lines immediately; the persisted results follow
+        # under the same tool call ids.
+        messages_out.append(
+            _build_pending_tool_message(msg.tool_calls, user_message, agent)
+        )
     if content and not has_tools:
         usage = getattr(msg, "usage_metadata", None) or {}
         chat_message_create = ChatMessageCreate(
@@ -86,7 +139,7 @@ async def handle_model_chunk(
             author_id=user_message.agent_id,
             author_type=AuthorType.AGENT,
             model=agent.model,
-            thread_type=user_message.author_type,
+            thread_type=user_message.thread_entrypoint,
             reply_to=user_message.id,
             message=content,
             thinking=thinking,
@@ -178,12 +231,8 @@ async def handle_tools_chunk(
             if call["id"] == msg.tool_call_id:
                 if call_index == 0:
                     have_first_call_in_cache = True
-                tool_call: ChatMessageToolCall = {
-                    "id": msg.tool_call_id,
-                    "name": call["name"],
-                    "parameters": call["args"],
-                    "success": True,
-                }
+                tool_call: ChatMessageToolCall = _lift_tool_call(call)
+                tool_call["success"] = True
                 status = getattr(msg, "status", None)
                 if status == "error":
                     tool_call["success"] = False
@@ -210,7 +259,7 @@ async def handle_tools_chunk(
         author_id=user_message.agent_id,
         author_type=AuthorType.TOOL,
         model=agent.model,
-        thread_type=user_message.author_type,
+        thread_type=user_message.thread_entrypoint,
         reply_to=user_message.id,
         message="",
         tool_calls=tool_calls,
@@ -250,9 +299,20 @@ async def handle_tools_chunk(
             tool_message_create.credit_cost = message_payment_event.total_amount
         # 2. Per-tool credit events
         for tool_call in tool_calls:
-            if not tool_call["success"]:
+            # Drain before the success check: a metered tool that reported a
+            # cost and then failed downstream must not leave its entry behind
+            # for the bounded registry to evict later.
+            metered_usd = take_tool_cost_usd(tool_call.get("id"))
+            if not tool_call.get("success"):
                 continue
-            tool_price = get_tool_price(tool_call["name"])
+            # Metered tools (video generation) report what the provider
+            # actually charged; everything else is a flat per-call price. Fees
+            # apply on top either way.
+            tool_price = (
+                await usd_to_credits(metered_usd)
+                if metered_usd is not None
+                else get_tool_price(tool_call["name"])
+            )
             payment_event = await expense_tool(
                 session,
                 team_id=payer or "",

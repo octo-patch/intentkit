@@ -49,10 +49,7 @@ def is_unrecoverable_checkpoint_error(exc: Exception) -> bool:
     except ImportError:
         pass
 
-    if isinstance(exc, unrecoverable_types):
-        return True
-
-    return False
+    return isinstance(exc, unrecoverable_types)
 
 
 def summarize_history_messages(msgs: list[Any], max_messages: int = 10) -> list[dict]:
@@ -194,7 +191,7 @@ async def cancel_cleanup(
         user_id=user_message.user_id,
         author_id=user_message.agent_id,
         author_type=AuthorType.SYSTEM,
-        thread_type=user_message.author_type,
+        thread_type=user_message.thread_entrypoint,
         reply_to=user_message.id,
         message="User cancelled the conversation",
         time_cost=time.perf_counter() - start,

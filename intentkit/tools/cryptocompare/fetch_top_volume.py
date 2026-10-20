@@ -27,6 +27,7 @@ class CryptoCompareFetchTopVolume(CryptoCompareBaseTool):
     """Tool for fetching top cryptocurrencies by trading volume from CryptoCompare."""
 
     name: str = "cryptocompare_fetch_top_volume"
+    title: str = "Fetch Top Volume"
     description: str = "Fetch top cryptocurrencies ranked by 24h trading volume."
     args_schema: ArgsSchema | None = CryptoCompareFetchTopVolumeInput
 
@@ -67,7 +68,7 @@ class CryptoCompareFetchTopVolume(CryptoCompareBaseTool):
 
             # Convert to list of CryptoCurrency objects
             result = []
-            if "Data" in volume_data and volume_data["Data"]:
+            if volume_data.get("Data"):
                 for item in volume_data["Data"]:
                     coin_info = item.get("CoinInfo", {})
                     raw_data = item.get("RAW", {}).get(to_symbol, {})

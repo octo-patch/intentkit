@@ -67,6 +67,7 @@ class TokenBalances(PortfolioBaseTool):
     """
 
     name: str = "portfolio_token_balances"
+    title: str = "Token Balances"
     description: str = "Get token balances and prices in USD for a wallet address."
     args_schema: ArgsSchema | None = TokenBalancesInput
 
@@ -142,10 +143,8 @@ class TokenBalances(PortfolioBaseTool):
             return await self._make_request(
                 method="GET", endpoint=endpoint, api_key=api_key, params=params
             )
-        except Exception as e:
-            logger.error(
-                f"token_balances.py: Error fetching token balances: {e}", exc_info=True
-            )
+        except Exception:
+            logger.exception("token_balances.py: Error fetching token balances")
             return {
                 "error": "An error occurred while fetching token balances. Please try again later."
             }

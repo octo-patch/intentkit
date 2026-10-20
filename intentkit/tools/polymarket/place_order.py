@@ -8,6 +8,7 @@ from typing import Any, Literal
 from langchain_core.tools import ArgsSchema
 from pydantic import BaseModel, Field
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.polymarket.base import BUY, PolymarketBaseTool
 
 logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 class PlaceOrderInput(BaseModel):
     """Input for placing an order."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_id: str = Field(
         description=(
             "The token ID of the outcome to trade. "
@@ -47,11 +49,12 @@ class PlaceOrderInput(BaseModel):
 class PlaceOrder(PolymarketBaseTool):
     """Place a limit order on a Polymarket outcome token.
 
-    Requires a configured wallet with signing capabilities.
     The order will be placed on the CLOB (Central Limit Order Book).
     """
 
     name: str = "polymarket_place_order"
+    title: str = "Place Order"
+    team_only: bool = True
     description: str = (
         "Place a limit order to buy or sell Polymarket outcome tokens. "
         "Specify the token_id, side (BUY/SELL), price (0-1), and size. "
@@ -64,6 +67,7 @@ class PlaceOrder(PolymarketBaseTool):
 
     async def _arun(
         self,
+        wallet_address: str,
         token_id: str,
         side: str,
         price: float,
@@ -71,8 +75,6 @@ class PlaceOrder(PolymarketBaseTool):
         neg_risk: bool = False,
         **kwargs: Any,
     ) -> str:
-        self._require_wallet("place orders")
-
         await self.user_rate_limit_by_tool(limit=10, seconds=60)
 
         side_int = BUY if side.upper() == "BUY" else 1
@@ -85,6 +87,7 @@ class PlaceOrder(PolymarketBaseTool):
             logger.warning("Failed to get tick size for %s, using default", token_id)
 
         order_payload = await self._sign_order(
+            wallet_address=wallet_address,
             token_id=token_id,
             side=side_int,
             price=price,
@@ -94,7 +97,7 @@ class PlaceOrder(PolymarketBaseTool):
         )
 
         # Post the order
-        result = await self._clob_auth_post("/order", order_payload)
+        result = await self._clob_auth_post(wallet_address, "/order", order_payload)
 
         return json.dumps(
             {

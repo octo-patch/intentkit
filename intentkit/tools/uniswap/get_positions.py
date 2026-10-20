@@ -3,51 +3,56 @@
 from decimal import Decimal
 from typing import Any, override
 
+from langchain_core.tools import ArgsSchema
 from langchain_core.tools.base import ToolException
+from pydantic import BaseModel, Field
 from web3 import Web3
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.uniswap.base import UniswapBaseTool
 from intentkit.tools.uniswap.constants import (
-    NETWORK_TO_CHAIN_ID,
     POSITION_MANAGER_ABI,
     POSITION_MANAGER_ADDRESSES,
 )
 from intentkit.tools.uniswap.utils import get_decimals, get_token_symbol
+from intentkit.wallets.web3 import get_async_web3_client
 
 NAME = "uniswap_get_positions"
 MAX_POSITIONS = 20
+
+
+class UniswapGetPositionsInput(BaseModel):
+    """Input for Uniswap get positions."""
+
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
 
 
 class UniswapGetPositions(UniswapBaseTool):
     """View Uniswap V3 liquidity positions."""
 
     name: str = NAME
+    title: str = "View Positions"
     description: str = (
-        "View your Uniswap V3 liquidity positions including pool details, "
+        "View Uniswap V3 liquidity positions including pool details, "
         "liquidity amounts, and uncollected fees."
     )
+    args_schema: ArgsSchema | None = UniswapGetPositionsInput
 
     @override
-    async def _arun(self, **kwargs: Any) -> str:
+    async def _arun(self, wallet_address: str, **kwargs: Any) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
-
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"Uniswap not supported on {network_id}. "
-                    f"Supported: {', '.join(NETWORK_TO_CHAIN_ID.keys())}"
-                )
+            # Read-only: validate team ownership, then query on-chain state.
+            # The network follows the wallet.
+            team_wallet = await self.resolve_wallet(wallet_address)
+            network_id = team_wallet.network
+            chain_id = self._resolve_chain_id(network_id)
 
             pm_address = POSITION_MANAGER_ADDRESSES.get(chain_id)
             if not pm_address:
                 raise ToolException(f"No PositionManager address for chain {chain_id}")
 
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
-            wallet_address = Web3.to_checksum_address(wallet.address)
+            w3 = get_async_web3_client(network_id)
+            owner = Web3.to_checksum_address(wallet_address)
 
             pm = w3.eth.contract(
                 address=Web3.to_checksum_address(pm_address),
@@ -55,14 +60,12 @@ class UniswapGetPositions(UniswapBaseTool):
             )
 
             # Get positions owned by wallet
-            balance = await pm.functions.balanceOf(wallet_address).call()
+            balance = await pm.functions.balanceOf(owner).call()
             positions: list[str] = []
 
             count = min(balance, MAX_POSITIONS)
             for i in range(count):
-                token_id = await pm.functions.tokenOfOwnerByIndex(
-                    wallet_address, i
-                ).call()
+                token_id = await pm.functions.tokenOfOwnerByIndex(owner, i).call()
                 pos_info = await pm.functions.positions(token_id).call()
                 entry = await _format_position(w3, chain_id, token_id, pos_info)
                 if entry:

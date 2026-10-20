@@ -21,6 +21,7 @@ class CryptoCompareFetchNews(CryptoCompareBaseTool):
     """Tool for fetching cryptocurrency news from CryptoCompare."""
 
     name: str = "cryptocompare_fetch_news"
+    title: str = "Fetch News"
     description: str = "Fetch latest crypto news for a specific token."
     args_schema: ArgsSchema | None = CryptoCompareFetchNewsInput
 
@@ -59,7 +60,7 @@ class CryptoCompareFetchNews(CryptoCompareBaseTool):
 
             # Convert to list of CryptoNews objects
             result = []
-            if "Data" in news_data and news_data["Data"]:
+            if news_data.get("Data"):
                 for article in news_data["Data"]:
                     result.append(
                         CryptoNews(

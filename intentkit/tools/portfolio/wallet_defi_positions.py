@@ -28,6 +28,7 @@ class WalletDefiPositions(PortfolioBaseTool):
     """
 
     name: str = "portfolio_wallet_defi_positions"
+    title: str = "Wallet DeFi Positions"
     description: str = "Get DeFi positions for a wallet (liquidity, staking, lending)."
     args_schema: ArgsSchema | None = WalletDefiPositionsInput
 
@@ -48,15 +49,11 @@ class WalletDefiPositions(PortfolioBaseTool):
             Dict containing DeFi positions data
         """
         context = self.get_context()
-        tool_config = context.agent.tool_config(self.category)
         logger.debug(
             f"wallet_defi_positions.py: Fetching wallet DeFi positions with context {context}"
         )
 
-        # Get the API key from the agent's configuration
-        api_key = tool_config.get("api_key")
-        if not api_key:
-            return {"error": "No Moralis API key provided in the configuration."}
+        api_key = self.get_api_key()
 
         # Build query parameters
         params = {"chain": chain}
@@ -67,10 +64,9 @@ class WalletDefiPositions(PortfolioBaseTool):
             return await self._make_request(
                 method="GET", endpoint=endpoint, api_key=api_key, params=params
             )
-        except Exception as e:
-            logger.error(
-                f"wallet_defi_positions.py: Error fetching wallet DeFi positions: {e}",
-                exc_info=True,
+        except Exception:
+            logger.exception(
+                "wallet_defi_positions.py: Error fetching wallet DeFi positions"
             )
             return {
                 "error": "An error occurred while fetching wallet DeFi positions. Please try again later."

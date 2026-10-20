@@ -8,6 +8,7 @@ from PIL import Image
 from pydantic import HttpUrl
 
 from intentkit.tools.base import ToolException
+from intentkit.utils.ssrf import httpx_request_guard
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +16,17 @@ logger = logging.getLogger(__name__)
 async def fetch_image_as_bytes(image_url: HttpUrl) -> bytes:
     """Fetches image bytes from a given URL. Converts unsupported formats to PNG using Pillow.
 
+    The URL comes from a tool argument, so the client carries the SSRF
+    guard: it classifies this URL and every redirect hop before connecting.
+
     Raises:
-        ToolException: If fetching or converting the image fails.
+        ToolException: If the URL targets an internal address, or if fetching
+            or converting the image fails.
     """
     try:
-        async with httpx.AsyncClient(timeout=90) as client:
+        async with httpx.AsyncClient(
+            timeout=90, event_hooks={"request": [httpx_request_guard]}
+        ) as client:
             response = await client.get(str(image_url), follow_redirects=True)
             response.raise_for_status()
 
@@ -49,9 +56,13 @@ async def fetch_image_as_bytes(image_url: HttpUrl) -> bytes:
                     return output.getvalue()
             except Exception as e:
                 msg = f"Failed to convert image ({detected_ext}) to PNG: {e}"
-                logger.error(msg, exc_info=True)
+                logger.exception(msg)
                 raise ToolException(msg) from e
 
+    except ToolException:
+        # Already a precise message — a blocked redirect hop, or an
+        # unrecognized image format. Re-wrapping would bury the reason.
+        raise
     except httpx.HTTPStatusError as e:
         msg = f"HTTP error fetching image {image_url}: Status {e.response.status_code}"
         logger.error(msg)
@@ -62,7 +73,7 @@ async def fetch_image_as_bytes(image_url: HttpUrl) -> bytes:
         raise ToolException(msg) from e
     except Exception as e:
         msg = f"Unexpected error fetching image {image_url}: {e}"
-        logger.error(msg, exc_info=True)
+        logger.exception(msg)
         raise ToolException(msg) from e
 
 

@@ -1,12 +1,10 @@
-from datetime import datetime, timezone
-
 from eth_utils.address import is_address
 
 from intentkit.abstracts.graph import AgentContext
 from intentkit.config.config import config
 from intentkit.models.agent import Agent
 from intentkit.models.agent_data import AgentData
-from intentkit.models.chat import AuthorType
+from intentkit.models.chat import AUTONOMOUS_CHAT_PREFIX, AuthorType
 from intentkit.models.user import User
 
 # ============================================================================
@@ -37,36 +35,43 @@ def _build_system_header(agent: Agent) -> str:
 
 
 def build_system_tools_section(agent: Agent, context: AgentContext) -> str:
-    """Build system tools guide section if running in private context."""
-    if not context.is_private:
+    """Build the system tools guide for the tools bound in this context.
+
+    Guests of a published agent get the read tools only; the write tools
+    (create_post/create_activity) are team_only and their lines appear only
+    when the owning team runs the agent.
+    """
+    own_team = context.is_own_team
+
+    bullets = []
+    cautions = []
+    if agent.is_post_enabled:
+        if own_team:
+            bullets.append("- create_post: Publish long-form content or articles.\n")
+            cautions.append("create_post")
+        bullets.append(
+            "- get_post: Get the full content of a post by its ID.\n"
+            "- recent_posts: Retrieve your recent posts (titles and excerpts only).\n"
+        )
+    if agent.is_activity_enabled:
+        if own_team:
+            bullets.append(
+                "- create_activity: Publish an activity to your public timeline. ONLY use when user explicitly requests it.\n"
+            )
+            cautions.append("create_activity")
+        bullets.append(
+            "- recent_activities: Retrieve your recent activities to maintain context.\n"
+        )
+
+    if not bullets:
         return ""
 
     lines = [
         "## System Tools Guide\n\n",
         "You have access to several system tools for internal operations:\n",
+        *bullets,
     ]
 
-    if agent.is_post_enabled:
-        lines.append(
-            "- create_post: Publish long-form content or articles.\n"
-            "- get_post: Get the full content of a post by its ID.\n"
-            "- recent_posts: Retrieve your recent posts (titles and excerpts only).\n"
-        )
-    if agent.is_activity_enabled:
-        lines.append(
-            "- create_activity: Publish an activity to your public timeline. ONLY use when user explicitly requests it.\n"
-            "- recent_activities: Retrieve your recent activities to maintain context.\n"
-        )
-    if agent.enable_long_term_memory:
-        lines.append(
-            "- update_memory: Add or update your long-term memory with new information.\n"
-        )
-
-    cautions = []
-    if agent.is_post_enabled:
-        cautions.append("create_post")
-    if agent.is_activity_enabled:
-        cautions.append("create_activity")
     if cautions:
         lines.append(
             f"\nCRITICAL RULE: NEVER use {' or '.join(cautions)} unless the user EXPLICITLY asks you to create/publish. "
@@ -80,8 +85,10 @@ def build_system_tools_section(agent: Agent, context: AgentContext) -> str:
 
 
 async def build_sub_agents_section(agent: Agent, context: AgentContext) -> str:
-    """Build sub-agents section listing available sub-agents and their purposes."""
-    if not agent.sub_agents or not context.is_private:
+    """Build sub-agents section listing available sub-agents and their descriptions."""
+    # call_agent is open to guests too: sub-agent runs recompute their own
+    # access context per message, so delegation grants no extra privileges.
+    if not agent.sub_agents:
         return ""
 
     from intentkit.core.agent.queries import get_agent_by_id_or_slug
@@ -93,8 +100,9 @@ async def build_sub_agents_section(agent: Agent, context: AgentContext) -> str:
 
     for agent_ref in agent.sub_agents:
         target = await get_agent_by_id_or_slug(agent_ref)
-        if target and target.purpose:
-            lines.append(f"- {agent_ref}: {target.purpose}\n")
+        if target:
+            suffix = f": {target.description}" if target.description else ""
+            lines.append(f"- {agent_ref}{suffix}\n")
 
     lines.append("\n")
 
@@ -121,30 +129,6 @@ def _build_social_accounts_section(agent: Agent, agent_data: AgentData) -> str:
 
     social_parts = []
 
-    # Twitter info - only include if twitter tool is enabled
-    twitter_enabled = (
-        agent.tools
-        and "twitter" in agent.tools
-        and agent.tools["twitter"].get("enabled") is True
-    )
-
-    if twitter_enabled and agent_data.twitter_id:
-        social_parts.append(
-            f"Your twitter id is {agent_data.twitter_id}, never reply or retweet yourself."
-        )
-        if agent_data.twitter_username:
-            social_parts.append(
-                f"Your twitter username is {agent_data.twitter_username}."
-            )
-        if agent_data.twitter_name:
-            social_parts.append(f"Your twitter name is {agent_data.twitter_name}.")
-
-        # Twitter verification status
-        if agent_data.twitter_is_verified:
-            social_parts.append("Your twitter account is verified.")
-        else:
-            social_parts.append("Your twitter account is not verified.")
-
     # Telegram info
     if agent.telegram_entrypoint_enabled:
         if agent_data.telegram_id:
@@ -161,40 +145,63 @@ def _build_social_accounts_section(agent: Agent, agent_data: AgentData) -> str:
     return "\n".join(social_parts) + ("\n" if social_parts else "")
 
 
-def _build_wallet_section(agent: Agent, agent_data: AgentData) -> str:
-    """Build wallet information section."""
+async def _build_wallet_section(agent: Agent, context: AgentContext) -> str:
+    """List the team's wallets when wallet-operating tools are bound here.
 
-    wallet_parts = []
-    network_id = agent.network_id
+    Agents do not own wallets. When at least one wallet-operating tool
+    survives the per-request team_only filtering and the team owns wallets,
+    every team wallet is listed so the agent can choose which one to use by
+    passing its address to the tool. Web3-themed tools that only read
+    on-chain or market data take no wallet and get no section. A guest whose
+    agent carries only signing tools gets no section either — those tools
+    are not bound for them.
+    """
+    from intentkit.core.agent.tool_registry import (
+        filter_wallet_tool_names,
+        get_team_only_tool_names,
+    )
+    from intentkit.models.wallet import TeamWallet, wallet_owner_team
 
-    if agent_data.evm_wallet_address and network_id != "solana":
-        wallet_parts.append(
-            f"Your EVM wallet address is {agent_data.evm_wallet_address}."
-            f"You are now in {network_id} network."
-        )
-    if agent_data.solana_wallet_address and network_id == "solana":
-        wallet_parts.append(
-            f"Your Solana wallet address is {agent_data.solana_wallet_address}."
-            f"You are now in {network_id} network."
-        )
+    if not agent.tools:
+        return ""
+    wallet_names = filter_wallet_tool_names(agent.tools)
+    if not context.is_own_team:
+        team_only = get_team_only_tool_names()
+        wallet_names = [name for name in wallet_names if name not in team_only]
+    if not wallet_names:
+        return ""
 
-    return "\n".join(wallet_parts) + ("\n" if wallet_parts else "")
+    wallets = await TeamWallet.list_for_team(wallet_owner_team(agent.team_id))
+    if not wallets:
+        return ""
+
+    lines = [
+        "## Team Wallets\n",
+        (
+            "Your team owns the following crypto wallets. Wallet-operating tools take a "
+            "`wallet_address` argument — pass the address of the wallet you "
+            "want to use. Ask the user which wallet to use when it is unclear.\n"
+        ),
+    ]
+    for wallet in wallets:
+        details = [f"provider: {wallet.wallet_provider}"]
+        details.append(f"network: {wallet.network}")
+        address = wallet.evm_wallet_address or wallet.solana_wallet_address or "n/a"
+        lines.append(f"- {wallet.name}: `{address}` ({', '.join(details)})")
+    lines.append(
+        "\nEach wallet operates on its own network shown above. On-chain "
+        "reads work anywhere, but transactions and signing are only "
+        "permitted when you are serving your own team.\n"
+    )
+
+    return "\n".join(lines)
 
 
 def _build_agent_characteristics_section(agent: Agent) -> str:
-    """Build agent characteristics section (purpose, personality, principles, etc.)."""
-    sections = []
-
-    if agent.purpose:
-        sections.append(f"## Purpose\n\n{agent.purpose}")
-    if agent.personality:
-        sections.append(f"## Personality\n\n{agent.personality}")
-    if agent.principles:
-        sections.append(f"## Principles\n\n{agent.principles}")
-    if agent.prompt:
-        sections.append(f"## Initial Rules\n\n{agent.prompt}")
-
-    return "\n\n".join(sections) + ("\n\n" if sections else "")
+    """Build agent characteristics section from the agent's system prompt."""
+    if not agent.system_prompt:
+        return ""
+    return agent.system_prompt + "\n\n"
 
 
 async def _build_user_info_section(context: AgentContext) -> str:
@@ -239,7 +246,7 @@ async def _build_user_info_section(context: AgentContext) -> str:
     return ""
 
 
-def build_agent_prompt(
+async def build_agent_prompt(
     agent: Agent, agent_data: AgentData, context: AgentContext
 ) -> str:
     """
@@ -248,9 +255,9 @@ def build_agent_prompt(
     This function orchestrates the building of different prompt sections:
     - System header and base prompt
     - Agent identity (name, ticker)
-    - Social accounts (Twitter, Telegram)
+    - Social accounts (Telegram)
     - Wallet information
-    - Agent characteristics (purpose, personality, principles)
+    - Agent characteristics (the agent's system prompt)
     - Tools-specific guides
     - Extra prompt from template
 
@@ -267,8 +274,8 @@ def build_agent_prompt(
         _build_agent_identity_section(agent),
         _build_agent_characteristics_section(agent),
         _build_social_accounts_section(agent, agent_data),
-        _build_wallet_section(agent, agent_data),
-        "\n",  # Add spacing before characteristics
+        await _build_wallet_section(agent, context),
+        "\n",  # Trailing spacing before the sections appended below
     ]
 
     base_prompt = "".join(section for section in prompt_sections if section)
@@ -290,7 +297,16 @@ async def _build_autonomous_task_prompt(agent: Agent, context: AgentContext) -> 
     from intentkit.core.autonomous import get_autonomous_task
     from intentkit.utils.error import IntentKitAPIError
 
-    task_id = context.chat_id.removeprefix("autonomous-")
+    if context.is_subagent:
+        # Delegated from an autonomous run: chat_id is a throwaway call-xxx id
+        # with no task record behind it, so skip the lookup. The Sub-agent Mode
+        # section already explains the delegation itself.
+        return (
+            "You are part of an autonomous task execution. You cannot ask the "
+            "user for clarification or input; make all decisions on your own. "
+        )
+
+    task_id = context.chat_id.removeprefix(AUTONOMOUS_CHAT_PREFIX)
 
     # Look up the team-owned autonomous task by id.
     autonomous_task = None
@@ -318,14 +334,21 @@ async def _build_autonomous_task_prompt(agent: Agent, context: AgentContext) -> 
     if autonomous_task.cron:
         task_info += f". This task runs on schedule: {autonomous_task.cron}"
 
-    # Add current time
-    current_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    # Add run start time. Frozen per run (not the current time): the system
+    # prompt is rebuilt on every model call, and a per-call timestamp would
+    # break provider prefix caching at this position for every step.
+    current_time = context.run_started_at.strftime("%Y-%m-%d %H:%M:%S UTC")
     task_info += f". Current time is {current_time}"
 
     # Add autonomous task guidelines
     task_info += (
         ". In autonomous task, you cannot ask the user for clarification or input. "
         "You must make all decisions on your own. "
+        "Conversation history is NOT retained between runs: every run starts "
+        "fresh, so persist anything future runs need with the record_memory "
+        "tool — this task has its own cron-scoped memory, with topics for the "
+        "cursor to resume from, what is already covered, and the baseline to "
+        "compare against. "
         "If an error prevents the task from proceeding, you may use create_activity to report the error only"
     )
 
@@ -404,6 +427,27 @@ def build_internal_info_prompt(context: AgentContext) -> str:
     return internal_info
 
 
+async def _build_memory_section(agent: Agent, context: AgentContext) -> str:
+    """Render the scoped memories active in this conversation.
+
+    Empty for sub-agent runs: memory is the entry agent's responsibility, so
+    delegated runs stay stateless. Every run with a scope gets the recording
+    guidance and the topic whitelist, since the agent decides whether a
+    fact is worth keeping before it reaches for the tool.
+    """
+    from intentkit.core.memory import (
+        load_memory_blocks,
+        render_memory_section,
+        resolve_memory_scopes,
+    )
+
+    scopes = resolve_memory_scopes(agent, context)
+    if not scopes:
+        return ""
+    blocks = await load_memory_blocks(context.agent_id, scopes)
+    return render_memory_section(blocks)
+
+
 # ============================================================================
 # MAIN PROMPT FACTORY FUNCTION
 # ============================================================================
@@ -414,7 +458,7 @@ async def build_system_prompt(
 ) -> str:
     """Construct the final system prompt for an agent run."""
 
-    base_prompt = build_agent_prompt(agent, agent_data, context)
+    base_prompt = await build_agent_prompt(agent, agent_data, context)
     final_system_prompt = base_prompt
 
     sub_agents_section = await build_sub_agents_section(agent, context)
@@ -427,6 +471,18 @@ async def build_system_prompt(
             f"{final_system_prompt}## Entrypoint rules{entrypoint_prompt}\n\n"
         )
 
+    if context.is_subagent:
+        final_system_prompt = (
+            f"{final_system_prompt}## Sub-agent Mode\n\n"
+            "You are running as a sub-agent: another agent invoked you to "
+            "delegate a task. This is a fresh, isolated conversation — you do "
+            "not have the calling agent's history with the user, so treat the "
+            "message you received as the complete task context. Your final "
+            "reply is returned to the calling agent, not shown directly to the "
+            "user; if you need more information to finish, state exactly what "
+            "you need as your final reply so the caller can supply it.\n\n"
+        )
+
     # Skip user info section for autonomous tasks
     if context.entrypoint != AuthorType.TRIGGER.value:
         user_info = await _build_user_info_section(context)
@@ -436,19 +492,7 @@ async def build_system_prompt(
     internal_info = build_internal_info_prompt(context)
     final_system_prompt = f"{final_system_prompt}{internal_info}"
 
-    if agent.enable_long_term_memory:
-        memory_section = "## Memory\n\n"
-        memory_section += (
-            "If you want to add or update your memory, call the update_memory tool.\n\n"
-        )
-        memory_section += "Here is your current memory:\n\n"
-        if agent_data.long_term_memory:
-            memory_section += agent_data.long_term_memory + "\n\n"
-        final_system_prompt = f"{final_system_prompt}{memory_section}"
-
-    if agent.prompt_append:
-        final_system_prompt = (
-            f"{final_system_prompt}## Additional Instructions\n\n{agent.prompt_append}"
-        )
+    memory_section = await _build_memory_section(agent, context)
+    final_system_prompt = f"{final_system_prompt}{memory_section}"
 
     return final_system_prompt

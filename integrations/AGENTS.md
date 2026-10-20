@@ -9,13 +9,15 @@ IntentKit's Core API.
 |---------|-------|------|
 | Telegram | Individual agents + team channels | [telegram/AGENTS.md](./telegram/AGENTS.md) |
 | WeChat | Team channels only (lead agent) | [wechat/AGENTS.md](./wechat/AGENTS.md) |
+| Lark / Feishu | Team channels only (lead agent) | [lark/AGENTS.md](./lark/AGENTS.md) |
+| Slack | Team channels only (lead agent) | [slack/AGENTS.md](./slack/AGENTS.md) |
 
 ## Tech Stack
 
 - **Language**: Go 1.26+ (module at `integrations/go.mod` covers both channels)
 - **HTTP client**: [resty v3](https://resty.dev/) — use it for **all** HTTP
   clients. Retries, timeouts, body-size limits, and SSE are all first-class;
-  do **not** hand-roll `net/http` clients. Use `resty.NewEventSource()` for
+  do **not** hand-roll `net/http` clients. Use `resty.NewSSESource()` for
   SSE streams (see `shared/sse.go`).
 - **Database**: [GORM](https://gorm.io/) on PostgreSQL (same DB as the Python
   side; no `ForeignKey` constraints by convention).
@@ -30,19 +32,24 @@ integrations/
 ├── AGENTS.md             (this file)
 ├── cmd/
 │   ├── telegram/main.go   # entrypoint
-│   └── wechat/main.go     # entrypoint
+│   ├── wechat/main.go     # entrypoint
+│   ├── lark/main.go       # entrypoint
+│   └── slack/main.go      # entrypoint
 ├── shared/               # cross-channel helpers
 │   ├── dispatcher.go      # MessageSender interface, dispatch logic
 │   ├── media.go           # DownloadFromURL (resty + SetResponseBodyLimit)
-│   └── sse.go             # SSE streaming via resty.EventSource
+│   └── sse.go             # SSE streaming via resty.SSESource
 ├── types/                # shared DTOs (ChatMessage, etc.)
 ├── telegram/             # channel code — see telegram/AGENTS.md
-└── wechat/               # channel code — see wechat/AGENTS.md
+├── wechat/               # channel code — see wechat/AGENTS.md
+├── lark/                 # channel code — see lark/AGENTS.md
+└── slack/                # channel code — see slack/AGENTS.md
 ```
 
 Each channel directory follows the same shape: `api/` (Core API client),
 `bot/` (manager + handler + sender), `config/` (env), `store/` (GORM models),
-plus any channel-specific subpackage (e.g. `wechat/ilink/`).
+plus any channel-specific subpackage (e.g. `wechat/ilink/`, `lark/larkclient/`,
+`slack/slackclient/`).
 
 ## Architecture Pattern
 
@@ -63,7 +70,7 @@ Every channel uses the same skeleton:
 - **HTTP**: always resty. Configure `SetRetryCount` / `SetRetryWaitTime` /
   `SetRetryMaxWaitTime` on the client; never write retry loops by hand. For
   non-idempotent POSTs that are safe to replay, call
-  `SetAllowNonIdempotentRetry(true)`. Bound response bodies with
+  `SetRetryAllowNonIdempotent(true)`. Bound response bodies with
   `SetResponseBodyLimit` instead of `io.LimitReader`.
 - **Context**: every outbound call must pass `ctx` via `SetContext(ctx)`.
   Long-running goroutines take `context.WithCancel(context.Background())`
@@ -103,8 +110,12 @@ Channel-specific env vars live in each channel's `AGENTS.md`.
 # Directly
 go run ./integrations/cmd/telegram
 go run ./integrations/cmd/wechat
+go run ./integrations/cmd/lark
+go run ./integrations/cmd/slack
 
 # Via Docker
 docker build -f integrations/Dockerfile.telegram -t intent-telegram integrations/
 docker build -f integrations/Dockerfile.wechat   -t intent-wechat   integrations/
+docker build -f integrations/Dockerfile.lark     -t intent-lark     integrations/
+docker build -f integrations/Dockerfile.slack    -t intent-slack    integrations/
 ```

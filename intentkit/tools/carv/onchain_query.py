@@ -39,6 +39,7 @@ class OnchainQueryTool(CarvBaseTool):
     """
 
     name: str = "carv_onchain_query"
+    title: str = "On-Chain Query"
     description: str = (
         "Query on-chain data from Ethereum, Base, Bitcoin, or Solana using natural language. "
         "Supports block info, transaction details, and aggregate analytics. "
@@ -56,8 +57,6 @@ class OnchainQueryTool(CarvBaseTool):
         Queries the CARV SQL Query API and returns the response.
         """
         context = self.get_context()
-
-        await self.apply_rate_limit(context)
 
         payload = {"question": question}
 
@@ -92,10 +91,7 @@ def _normalize_unit(response_data: dict[str, Any], chain: str) -> None:
     value_index = column_infos.index("value")
 
     chain = chain.lower()
-    if chain == "ethereum":
-        divisor = Decimal("1e18")
-        ticker = "ETH"
-    elif chain == "base":
+    if chain in ("ethereum", "base"):
         divisor = Decimal("1e18")
         ticker = "ETH"
     elif chain == "solana":

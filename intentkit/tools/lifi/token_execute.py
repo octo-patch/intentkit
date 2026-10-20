@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from web3 import AsyncWeb3
 from web3.exceptions import TimeExhausted
 
+from intentkit.models.wallet import TeamWallet
 from intentkit.tools.lifi.base import LiFiBaseTool
 from intentkit.tools.lifi.token_quote import TokenQuote
 from intentkit.tools.lifi.utils import (
@@ -26,11 +27,16 @@ from intentkit.tools.lifi.utils import (
     prepare_transaction_params,
     validate_inputs,
 )
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
+from intentkit.wallets import get_cdp_network as resolve_cdp_network
+from intentkit.wallets import get_evm_account as fetch_evm_account
+from intentkit.wallets.web3 import get_async_web3_client
 
 
 class TokenExecuteInput(BaseModel):
     """Input for the TokenExecute tool."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     from_chain: str = Field(
         description="Source chain (e.g. 'ETH', 'POL', 'ARB'). Chain ID or key."
     )
@@ -55,14 +61,16 @@ class TokenExecuteInput(BaseModel):
 class TokenExecute(LiFiBaseTool):
     """Tool for executing token transfers across chains using LiFi.
 
-    This tool executes actual token transfers and swaps using the CDP EVM account.
-    Requires a properly configured CDP wallet to work.
+    This tool executes actual token transfers and swaps using the CDP EVM
+    account behind the selected team wallet.
     """
 
     name: str = "lifi_token_execute"
+    title: str = "Token Execute"
+    team_only: bool = True
     description: str = (
         "Execute a cross-chain token transfer or same-chain swap via LiFi. "
-        "Use token_quote first to check rates. Requires CDP wallet with sufficient funds."
+        "Use lifi_token_quote first to check rates."
     )
     args_schema: ArgsSchema | None = TokenExecuteInput
     api_url: str = LIFI_API_URL
@@ -100,6 +108,7 @@ class TokenExecute(LiFiBaseTool):
 
     async def _arun(
         self,
+        wallet_address: str,
         from_chain: str,
         to_chain: str,
         from_token: str,
@@ -125,40 +134,35 @@ class TokenExecute(LiFiBaseTool):
                 self.allowed_chains,
             )
 
-            # Get agent context for CDP wallet
-            context = self.get_context()
-            agent = context.agent
-            network_id = agent.network_id
-            if not network_id:
-                raise ToolException(
-                    "Agent network ID is not configured. Please set it before executing on-chain transactions."
-                )
+            # Resolve the team wallet once (guarded signing path); the CDP
+            # network, EVM account, and web3 client all derive from it.
+            wallet = await self.get_signing_wallet(wallet_address)
 
             try:
-                cdp_network = self.get_cdp_network()
+                cdp_network = resolve_cdp_network(wallet.network)
             except Exception as e:
                 self.logger.error("LiFi_CDP_Network_Error: %s", str(e))
-                raise ToolException(f"Invalid agent network for CDP: {e!s}")
+                raise ToolException(f"Invalid wallet network for CDP: {e!s}")
 
             self.logger.info(
                 f"Executing LiFi transfer: {from_amount} {from_token} on {from_chain} -> {to_token} on {to_chain}"
             )
 
             # Get CDP EVM account and web3 client
-            evm_account = await self._get_evm_account()
+            evm_account = await self._get_evm_account(wallet)
 
             from_address = evm_account.address
             if not from_address:
                 raise ToolException(
-                    "No wallet address available. Please check your CDP wallet configuration."
+                    "No wallet address available for the selected wallet."
                 )
 
             try:
-                web3 = self.web3_client()
+                web3 = get_async_web3_client(wallet.network)
             except Exception as e:
                 self.logger.error("LiFi_Web3_Error: %s", str(e))
                 raise ToolException(
-                    "Unable to initialize Web3 client. Please verify the agent's network configuration."
+                    "Unable to initialize Web3 client. Please verify the wallet's network configuration."
                 )
 
             # Get quote and execute transfer
@@ -206,14 +210,12 @@ class TokenExecute(LiFiBaseTool):
             self.logger.error("LiFi_Error: %s", str(e))
             raise ToolException(f"An unexpected error occurred: {e!s}")
 
-    async def _get_evm_account(self) -> EvmServerAccount:
-        """Get CDP EVM account with error handling."""
+    async def _get_evm_account(self, wallet: TeamWallet) -> EvmServerAccount:
+        """Get the CDP EVM account behind a resolved team wallet, with error handling."""
         try:
-            evm_account = await self.get_evm_account()
+            evm_account = await fetch_evm_account(wallet)
             if not evm_account:
-                raise ToolException(
-                    "CDP wallet account not configured. Please set up your agent's CDP wallet first."
-                )
+                raise ToolException("No CDP account available for the selected wallet.")
 
             return evm_account
 
@@ -222,7 +224,7 @@ class TokenExecute(LiFiBaseTool):
         except Exception as e:
             self.logger.error("LiFi_CDP_Error: %s", str(e))
             raise ToolException(
-                f"Cannot access CDP wallet: {e!s}\n\nPlease ensure your agent has a properly configured CDP wallet with sufficient funds."
+                f"Cannot access CDP account: {e!s}\n\nEnsure the selected wallet is a CDP wallet with sufficient funds."
             )
 
     async def _get_quote(
@@ -314,7 +316,7 @@ class TokenExecute(LiFiBaseTool):
             )
         except Exception as e:
             self.logger.error("LiFi_Token_Approval_Error: %s", str(e))
-            raise ToolException(f"Failed to approve token: {str(e)}")
+            raise ToolException(f"Failed to approve token: {e!s}")
 
     async def _execute_transfer_transaction(
         self,
@@ -348,7 +350,7 @@ class TokenExecute(LiFiBaseTool):
 
         except Exception as e:
             self.logger.error("LiFi_Execution_Error: %s", str(e))
-            raise ToolException(f"Failed to execute transaction: {str(e)}")
+            raise ToolException(f"Failed to execute transaction: {e!s}")
 
     def _build_transaction_request(
         self, tx_params: dict[str, Any]
@@ -489,7 +491,7 @@ class TokenExecute(LiFiBaseTool):
 
             except Exception as e:
                 self.logger.warning(
-                    f"Status check failed (attempt {attempt + 1}): {str(e)}"
+                    f"Status check failed (attempt {attempt + 1}): {e!s}"
                 )
 
             attempt += 1
@@ -563,4 +565,4 @@ class TokenExecute(LiFiBaseTool):
 
         except Exception as e:
             self.logger.error("Token approval failed: %s", e)
-            raise ToolException(f"Failed to approve token transfer: {str(e)}")
+            raise ToolException(f"Failed to approve token transfer: {e!s}")

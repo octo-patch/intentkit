@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from langchain_core.tools import BaseTool
 
+from intentkit.core.lead.constants import compose_system_prompt
 from intentkit.core.lead.tools.get_post import lead_get_post_tool
 from intentkit.core.lead.tools.recent_team_activities import (
     lead_recent_team_activities_tool,
@@ -27,17 +28,25 @@ def get_content_manager_tools() -> Sequence[BaseTool]:
 
 def build_content_manager(team_id: str) -> Agent:
     """Build an in-memory Content Manager sub-agent."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
-    prompt = (
-        "### Workflow\n\n"
-        "1. Use `lead_recent_team_activities` to see recent team activities.\n"
-        "2. Use `lead_recent_team_posts` to browse recent team posts.\n"
-        "3. Use `lead_get_post` with a post ID to read full post content.\n\n"
-        "### Guidelines\n\n"
-        "- When summarizing activities, highlight key actions and trends.\n"
-        "- When reviewing posts, provide concise summaries.\n"
-        "- Use post IDs from the list to fetch full content when needed.\n"
+    system_prompt = compose_system_prompt(
+        purpose="Read and review team activities and posts.",
+        principles=(
+            "1. Speak to users in their language.\n"
+            "2. Provide clear, concise summaries.\n"
+            "3. Reference specific post IDs when discussing content."
+        ),
+        rules=(
+            "### Workflow\n\n"
+            "1. Use `lead_recent_team_activities` to see recent team activities.\n"
+            "2. Use `lead_recent_team_posts` to browse recent team posts.\n"
+            "3. Use `lead_get_post` with a post ID to read full post content.\n\n"
+            "### Guidelines\n\n"
+            "- When summarizing activities, highlight key actions and trends.\n"
+            "- When reviewing posts, provide concise summaries.\n"
+            "- Use post IDs from the list to fetch full content when needed.\n"
+        ),
     )
 
     agent_data = {
@@ -45,31 +54,15 @@ def build_content_manager(team_id: str) -> Agent:
         "owner": "system",
         "team_id": team_id,
         "name": "Content Manager",
-        "purpose": "Read and review team activities and posts.",
-        "principles": (
-            "1. Speak to users in their language.\n"
-            "2. Provide clear, concise summaries.\n"
-            "3. Reference specific post IDs when discussing content."
-        ),
         "model": pick_default_model(),
-        "prompt": prompt,
-        "temperature": 0.2,
+        "system_prompt": system_prompt,
         "search_internet": False,
-        "super_mode": False,
-        "enable_todo": False,
         "enable_activity": False,
         "enable_post": False,
-        "enable_long_term_memory": False,
         "sub_agents": None,
-        "tools": {
-            "ui": {
-                "enabled": True,
-                "states": {
-                    "ui_show_card": "private",
-                    "ui_ask_user": "private",
-                },
-            },
-        },
+        # ui_show_card / ui_ask_user are interactive_only system tools now;
+        # ToolBindingMiddleware drops them per request for sub-agent runs
+        "tools": None,
         "created_at": now,
         "updated_at": now,
     }

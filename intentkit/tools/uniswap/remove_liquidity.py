@@ -9,9 +9,9 @@ from langchain_core.tools.base import ToolException
 from pydantic import BaseModel, Field
 from web3 import Web3
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.uniswap.base import UniswapBaseTool
 from intentkit.tools.uniswap.constants import (
-    NETWORK_TO_CHAIN_ID,
     POSITION_MANAGER_ABI,
     POSITION_MANAGER_ADDRESSES,
 )
@@ -25,6 +25,7 @@ UINT128_MAX = (1 << 128) - 1
 class UniswapRemoveLiquidityInput(BaseModel):
     """Input for Uniswap remove liquidity."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_id: int = Field(description="NFT position ID to remove liquidity from")
     percentage: float = Field(
         default=100.0,
@@ -36,6 +37,8 @@ class UniswapRemoveLiquidity(UniswapBaseTool):
     """Remove liquidity from a Uniswap V3 position."""
 
     name: str = NAME
+    title: str = "Remove Liquidity"
+    team_only: bool = True
     description: str = (
         "Remove liquidity from a Uniswap V3 position. "
         "Specify percentage (1-100) to partially or fully remove."
@@ -45,21 +48,14 @@ class UniswapRemoveLiquidity(UniswapBaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_id: int,
         percentage: float = 100.0,
         **kwargs: Any,
     ) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
-
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"Uniswap not supported on {network_id}. "
-                    f"Supported: {', '.join(NETWORK_TO_CHAIN_ID.keys())}"
-                )
+            wallet = await self.get_unified_wallet(wallet_address)
+            chain_id = self._resolve_chain_id(wallet.network_id)
 
             if not 1 <= percentage <= 100:
                 raise ToolException("Percentage must be between 1 and 100")
@@ -68,9 +64,8 @@ class UniswapRemoveLiquidity(UniswapBaseTool):
             if not pm_address:
                 raise ToolException(f"No PositionManager address for chain {chain_id}")
 
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
-            wallet_address = Web3.to_checksum_address(wallet.address)
+            w3 = wallet.w3
+            recipient = Web3.to_checksum_address(wallet.address)
 
             checksum_pm = Web3.to_checksum_address(pm_address)
             pm = w3.eth.contract(address=checksum_pm, abi=POSITION_MANAGER_ABI)
@@ -108,7 +103,7 @@ class UniswapRemoveLiquidity(UniswapBaseTool):
             # Collect all tokens + fees
             collect_data = pm.encode_abi(
                 "collect",
-                [(token_id, wallet_address, UINT128_MAX, UINT128_MAX)],
+                [(token_id, recipient, UINT128_MAX, UINT128_MAX)],
             )
             tx_hash = await wallet.send_transaction(
                 to=checksum_pm,
@@ -129,7 +124,7 @@ class UniswapRemoveLiquidity(UniswapBaseTool):
                     )
                     burn_receipt = await wallet.wait_for_receipt(burn_tx)
                     burned = burn_receipt.get("status", 0) == 1
-                except Exception:
+                except Exception:  # noqa: S110 - best-effort step; outcome is reflected in the result
                     pass
 
             # Format result

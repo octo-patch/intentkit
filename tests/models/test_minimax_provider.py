@@ -1,219 +1,291 @@
+"""MiniMax rollout contracts at the real LangChain/SDK HTTP boundary (offline)."""
+
+import json
 from decimal import Decimal
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+import httpx2
 import pytest
-from langchain_anthropic import ChatAnthropic
-from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from intentkit.config.config import Config
-from intentkit.models.llm import (
-    LLMModelInfo,
-    MiniMaxLLM,
-    load_default_llm_models,
-)
+from intentkit.models import llm, llm_picker
 
 
-def _load_minimax_catalog() -> dict[str, LLMModelInfo]:
-    configured = SimpleNamespace(
-        openai_api_key=None,
-        google_api_key=None,
-        deepseek_api_key=None,
-        xai_api_key=None,
-        openrouter_api_key=None,
-        minimax_plan_api_key="test-key",
-        mimo_plan_api_key=None,
-        openai_compatible_api_key=None,
-        openai_compatible_base_url=None,
-        openai_compatible_model=None,
-        openai_compatible_model_lite=None,
-        anthropic_compatible_api_key=None,
-        anthropic_compatible_base_url=None,
-        anthropic_compatible_model=None,
-        anthropic_compatible_model_lite=None,
+@pytest.fixture
+def catalog(monkeypatch):
+    monkeypatch.setattr(llm.config, "minimax_plan_api_key", "test-minimax-key")
+    monkeypatch.setattr(llm.config, "openrouter_api_key", "test-openrouter-key")
+    monkeypatch.setattr(
+        llm.config, "minimax_base_url", "https://api.minimax.io/anthropic"
     )
-    with patch("intentkit.models.llm.config", configured):
-        return load_default_llm_models()
+    models = llm.load_default_llm_models()
+    monkeypatch.setattr(llm, "AVAILABLE_MODELS", models)
+    monkeypatch.setattr(llm, "_MODEL_ID_INDEX", llm.build_model_id_index(models))
+    monkeypatch.setattr(llm_picker, "AVAILABLE_MODELS", models)
+    return models
 
 
-def test_minimax_catalog_covers_current_models_and_capabilities():
-    models = _load_minimax_catalog()
+@pytest.fixture
+def wire(monkeypatch):
+    """Intercept only HTTP sends; model construction and serialization stay real."""
+    requests = []
 
-    m3 = models["minimax:MiniMax-M3"]
-    assert m3.context_length == 1_000_000
-    assert m3.output_length == 512_000
-    assert m3.input_price == Decimal("0.6")
-    assert m3.cached_input_price == Decimal("0.12")
-    assert m3.cache_write_price is None
-    assert m3.output_price == Decimal("2.4")
-    assert m3.supports_image_input is True
-    assert m3.supports_video_input is True
-    assert m3.thinking_modes == ["adaptive", "disabled"]
-    assert m3.default_thinking_mode == "disabled"
+    def install(module):
+        async def send(self, request, **kwargs):
+            body = json.loads(request.content)
+            requests.append((str(request.url), body))
+            if request.url.path.endswith("/messages"):
+                response = {
+                    "id": "msg_test",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": body["model"],
+                    "content": [{"type": "text", "text": "ok"}],
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            else:
+                response = {
+                    "id": "chatcmpl_test",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": body["model"],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                }
+            return module.Response(200, json=response, request=request)
 
-    m27 = models["minimax:MiniMax-M2.7"]
-    assert m27.context_length == 204_800
-    assert m27.output_length == 204_800
-    assert m27.supports_image_input is False
-    assert m27.supports_video_input is False
-    assert m27.thinking_modes == ["always_on"]
-    assert m27.default_thinking_mode == "always_on"
-    assert m27.cache_write_price == Decimal("0.375")
+        monkeypatch.setattr(module.AsyncClient, "send", send)
+
+    install(httpx)
+    install(httpx2)
+    return requests
 
 
-def test_minimax_m3_uses_target_pricing_for_costs():
-    m3 = _load_minimax_catalog()["minimax:MiniMax-M3"]
-
-    assert m3.cost_usd(600_000, 1_000_000) == Decimal("2.76")
-    assert m3.cost_usd(
-        600_000, 1_000_000, cached_input_tokens=100_000
-    ) == Decimal("2.712")
-
-
-def test_minimax_endpoint_examples_cover_both_regions_and_protocols():
-    env_example = Path(".env.example").read_text(encoding="utf-8")
-
-    assert "https://api.minimax.io/anthropic" in env_example
-    assert "https://api.minimaxi.com/anthropic" in env_example
-    assert "https://api.minimax.io/v1" in env_example
-    assert "https://api.minimaxi.com/v1" in env_example
-
-
-def test_minimax_base_url_defaults_to_global_anthropic_endpoint(monkeypatch):
-    monkeypatch.setenv("REDIS_HOST", "localhost")
-    monkeypatch.delenv("MINIMAX_PLAN_BASE_URL", raising=False)
-    monkeypatch.setattr(Config, "_setup_langfuse", lambda self: None)
-
-    cfg = Config()
-
-    assert cfg.minimax_plan_base_url == "https://api.minimax.io/anthropic"
+def test_catalog_prices_capabilities_and_order(catalog):
+    direct = [
+        m
+        for m in catalog.values()
+        if m.provider == llm.LLMProvider.MINIMAX and m.selectable
+    ]
+    assert [m.api_id for m in direct] == ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+    flash = direct[0]
+    assert (flash.context_length, flash.output_length) == (1_000_000, 524_288)
+    assert (flash.input_price, flash.output_price, flash.cached_input_price) == (
+        Decimal("0.15"),
+        Decimal("0.60"),
+        Decimal("0.015"),
+    )
+    assert flash.supports_image_input and flash.supports_video_input
+    assert flash.cost_usd(1_000_000, 1_000_000, 100_000) == Decimal("0.7365")
+    gateway = [
+        m
+        for m in catalog.values()
+        if m.provider == llm.LLMProvider.OPENROUTER
+        and m.id.startswith("minimax/")
+        and m.selectable
+    ]
+    assert [m.api_id for m in gateway] == [
+        "minimax/minimax-m3.1-flash:free",
+        "minimax/minimax-m3",
+    ]
+    assert gateway[0].input_price == gateway[0].output_price == 0
+    assert gateway[0].origin_provider == "minimax"
+    # Preserve the pinned gateway M3 contract rather than copying direct limits.
+    assert (gateway[1].context_length, gateway[1].output_length) == (524_288, 512_000)
+    assert gateway[1].origin_provider == "minimax/fp8"
 
 
 @pytest.mark.asyncio
-async def test_minimax_adapter_uses_configured_anthropic_base_url(monkeypatch):
-    m3 = _load_minimax_catalog()["minimax:MiniMax-M3"]
-    captured: dict[str, object] = {}
+async def test_hidden_legacy_remains_explicitly_routable(catalog):
+    choices = llm_picker.list_available_model_ids()
+    for model_id in ("MiniMax-M2.7", "minimax/minimax-m2-her"):
+        assert model_id not in choices
+        assert model_id not in [m.id for m in await llm.LLMModelInfo.get_all()]
+        assert (await llm.LLMModelInfo.get(model_id)).api_id == model_id
+        assert llm.resolve_model_id(model_id) == model_id
+    assert (await llm.LLMModelInfo.get("minimax")).api_id == "MiniMax-M3"
+    assert (await llm.LLMModelInfo.get("MiniMax-M3")).api_id == "MiniMax-M3"
+    assert (
+        await llm.LLMModelInfo.get("minimax/minimax")
+    ).api_id == "minimax/minimax-m3"
 
-    class FakeChatAnthropic:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
 
-    async def fake_get(model_id: str) -> LLMModelInfo:
-        assert model_id == m3.id
-        return m3
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider", [llm.LLMProvider.MINIMAX, llm.LLMProvider.OPENROUTER]
+)
+async def test_default_picker_reaches_real_sdk(catalog, wire, provider):
+    with patch.object(
+        llm.LLMProvider, "is_configured", property(lambda self: self == provider)
+    ):
+        selected = llm_picker.pick_default_model()
+    adapter = await llm.create_llm_model(selected)
+    model = await adapter.create_instance()
+    await model.ainvoke("hello")
+    url, body = wire[-1]
+    assert "service_tier" not in body
+    if provider == llm.LLMProvider.MINIMAX:
+        assert url == "https://api.minimax.io/anthropic/v1/messages"
+        assert body["model"] == "MiniMax-M3.1-Flash"
+        assert body["thinking"] == {"type": "adaptive"}
+        assert body["output_config"] == {"effort": "max"}
+    else:
+        assert url == "https://openrouter.ai/api/v1/chat/completions"
+        assert body["model"] == "minimax/minimax-m3.1-flash:free"
+        assert body["reasoning"] == {"effort": "max"}
+        assert body["provider"] == {"order": ["minimax"], "allow_fallbacks": False}
 
-    monkeypatch.setattr("langchain_anthropic.ChatAnthropic", FakeChatAnthropic)
-    monkeypatch.setattr(LLMModelInfo, "get", staticmethod(fake_get))
-    monkeypatch.setattr("intentkit.models.llm.config.minimax_plan_api_key", "test-key")
-    monkeypatch.setattr(
-        "intentkit.models.llm.config.minimax_plan_base_url",
-        "https://api.minimaxi.com/anthropic",
-    )
 
-    model = MiniMaxLLM(model_name=m3.id, info=m3)
-    await model.create_instance()
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+async def test_flash_effort_at_http_boundary(catalog, wire, effort):
+    adapter = await llm.create_llm_model("MiniMax-M3.1-Flash", effort)
+    model = await adapter.create_instance()
+    await model.ainvoke("hello")
+    assert wire[-1][1]["output_config"] == {"effort": effort}
+    assert wire[-1][1]["thinking"] == {"type": "adaptive"}
 
-    assert captured["base_url"] == "https://api.minimaxi.com/anthropic"
-    assert captured["model"] == "MiniMax-M3"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effort", ["none", "minimal"])
+@pytest.mark.parametrize("model_id", ["minimax-flash", "minimax/minimax-flash:free"])
+async def test_flash_rejects_unsupported_effort_before_http(
+    catalog, wire, effort, model_id
+):
+    adapter = await llm.create_llm_model(model_id, effort)
+    with pytest.raises(ValueError, match="requires low/medium/high/xhigh/max"):
+        await adapter.create_instance()
+    assert wire == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_id", ["minimax", "MiniMax-M3", "MiniMax-M2.7"])
+@pytest.mark.parametrize("effort", [None, "none", "high"])
+async def test_saved_models_keep_wire_id_and_no_effort_depth(
+    catalog, wire, model_id, effort
+):
+    adapter = await llm.create_llm_model(model_id, effort)
+    model = await adapter.create_instance()
+    await model.ainvoke("hello")
+    body = wire[-1][1]
+    assert body["model"] == ("MiniMax-M3" if model_id == "minimax" else model_id)
+    assert "output_config" not in body
+    if model_id == "MiniMax-M2.7":
+        assert "thinking" not in body
+    elif effort == "none":
+        assert body["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "base_url",
-    ["https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"],
+    [
+        "https://api.minimax.io/anthropic",
+        "https://api.minimaxi.com/anthropic",
+        "https://custom.example/anthropic",
+    ],
 )
-async def test_anthropic_client_appends_messages_path(base_url):
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "id": "msg_test",
-                "type": "message",
-                "role": "assistant",
-                "model": "MiniMax-M3",
-                "content": [{"type": "text", "text": "ok"}],
-                "stop_reason": "end_turn",
-                "stop_sequence": None,
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-            },
-        )
-
-    transport = httpx.MockTransport(handler)
-    async_client = httpx.AsyncClient(transport=transport)
-    with patch(
-        "langchain_anthropic.chat_models._get_default_async_httpx_client",
-        return_value=async_client,
-    ):
-        model = ChatAnthropic.model_validate(
-            {
-                "model": "MiniMax-M3",
-                "api_key": "test-key",
-                "base_url": base_url,
-                "max_retries": 0,
-            }
-        )
-
-        try:
-            await model.ainvoke("hello")
-        finally:
-            await async_client.aclose()
-
-    assert requests[-1].url.path == "/anthropic/v1/messages"
+async def test_configured_endpoint_tools_images_and_reasoning_history(
+    catalog, wire, monkeypatch, base_url
+):
+    # Endpoint preservation is tested offline; this does not claim regional entitlement.
+    monkeypatch.setattr(llm.config, "minimax_base_url", base_url)
+    adapter = await llm.create_llm_model("minimax-flash")
+    model = await adapter.create_instance()
+    tool = {
+        "name": "lookup",
+        "description": "Look up a value",
+        "input_schema": {"type": "object", "properties": {}},
+    }
+    thinking = {
+        "type": "thinking",
+        "thinking": "Keep this reasoning.",
+        "signature": "test-signature",
+    }
+    image = {
+        "type": "image",
+        "source": {"type": "url", "url": "https://example.com/image.png"},
+    }
+    history = [
+        HumanMessage(content=[{"type": "text", "text": "Read this"}, image]),
+        AIMessage(
+            content=[
+                thinking,
+                {"type": "tool_use", "id": "call_test", "name": "lookup", "input": {}},
+            ]
+        ),
+        ToolMessage(content="found", tool_call_id="call_test"),
+    ]
+    await model.bind_tools([tool]).ainvoke(history)
+    url, body = wire[-1]
+    assert url == base_url + "/v1/messages"
+    assert body["tools"][0]["name"] == "lookup"
+    assert body["messages"][0]["content"][1] == image
+    assert body["messages"][1]["content"][0] == thinking
+    assert body["messages"][1]["content"][1]["id"] == "call_test"
+    assert body["messages"][2]["content"][0]["tool_use_id"] == "call_test"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "base_url", ["https://api.minimax.io/v1", "https://api.minimaxi.com/v1"]
-)
-async def test_openai_client_appends_chat_completions_path(base_url):
-    requests: list[httpx.Request] = []
+async def test_gateway_tools_images_and_reasoning_history(catalog, wire):
+    adapter = await llm.create_llm_model("minimax/minimax-flash:free")
+    model = await adapter.create_instance()
+    details = [{"type": "reasoning.text", "text": "Keep reasoning", "index": 0}]
+    image = {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+    history = [
+        HumanMessage(content=[{"type": "text", "text": "Read this"}, image]),
+        AIMessage(
+            content="",
+            additional_kwargs={"reasoning_details": details},
+            tool_calls=[{"id": "call_test", "name": "lookup", "args": {}}],
+        ),
+        ToolMessage(content="found", tool_call_id="call_test"),
+    ]
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Look up",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    await model.bind_tools([tool]).ainvoke(history)
+    body = wire[-1][1]
+    assert body["messages"][0]["content"][1] == image
+    assert body["messages"][1]["reasoning_details"] == details
+    assert body["messages"][1]["tool_calls"][0]["id"] == "call_test"
+    assert body["messages"][2]["tool_call_id"] == "call_test"
+    assert body["tools"][0]["function"]["name"] == "lookup"
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "id": "chatcmpl_test",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "MiniMax-M3",
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "ok"},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
-                },
-            },
-        )
 
-    transport = httpx.MockTransport(handler)
-    async_client = httpx.AsyncClient(transport=transport)
-    sync_client = httpx.Client(transport=transport)
-    model = ChatOpenAI(
-        model="MiniMax-M3",
-        api_key=SecretStr("test-key"),
-        base_url=base_url,
-        http_async_client=async_client,
-        http_client=sync_client,
-        max_retries=0,
-    )
-
-    try:
-        await model.ainvoke("hello")
-    finally:
-        await async_client.aclose()
-        sync_client.close()
-
-    assert requests[-1].url.path == "/v1/chat/completions"
+@pytest.mark.parametrize("legacy", [True, False])
+def test_config_aliases_preserve_endpoint_and_key(monkeypatch, legacy):
+    monkeypatch.setenv("REDIS_HOST", "localhost")
+    for key in (
+        "MINIMAX_API_KEY",
+        "MINIMAX_BASE_URL",
+        "MINIMAX_PLAN_API_KEY",
+        "MINIMAX_PLAN_BASE_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    prefix = "MINIMAX_PLAN" if legacy else "MINIMAX"
+    monkeypatch.setenv(prefix + "_API_KEY", "test-config-key")
+    monkeypatch.setenv(prefix + "_BASE_URL", "https://custom.example/anthropic")
+    monkeypatch.setattr(Config, "_setup_langfuse", lambda self: None)
+    cfg = Config()
+    assert cfg.minimax_plan_api_key == "test-config-key"
+    assert cfg.minimax_base_url == "https://custom.example/anthropic"

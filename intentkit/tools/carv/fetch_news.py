@@ -16,8 +16,6 @@ class CarvNewsInput(BaseModel):
     This API endpoint does not require any specific parameters from the user.
     """
 
-    pass
-
 
 class FetchNewsTool(CarvBaseTool):
     """
@@ -27,6 +25,7 @@ class FetchNewsTool(CarvBaseTool):
     """
 
     name: str = "carv_fetch_news"
+    title: str = "Fetch News"
     description: str = (
         "Fetch latest news articles from CARV API with title, URL, and summary."
     )
@@ -43,8 +42,6 @@ class FetchNewsTool(CarvBaseTool):
         Example: {"infos": [{"title": "...", "url": "...", "card_text": "..."}, ...]}
         """
         context = self.get_context()
-
-        await self.apply_rate_limit(context)
 
         result = await self._call_carv_api(
             context=context,

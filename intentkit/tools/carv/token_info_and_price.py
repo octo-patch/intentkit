@@ -29,6 +29,7 @@ class TokenInfoAndPriceTool(CarvBaseTool):
     """
 
     name: str = "carv_token_info_and_price"
+    title: str = "Token Information and Price"
     description: str = (
         "Get token info and current USD price from CARV by ticker or name. "
         "Returns metadata including symbol, platform, tags, and contract addresses."
@@ -67,19 +68,16 @@ class TokenInfoAndPriceTool(CarvBaseTool):
             )
 
             fallback_params = {"ticker": fallback_ticker}
-            try:
-                result = await self._call_carv_api(
-                    context=context,
-                    endpoint=path,
-                    params=fallback_params,
-                    method=method,
+            result = await self._call_carv_api(
+                context=context,
+                endpoint=path,
+                params=fallback_params,
+                method=method,
+            )
+            if result.get("price") == 0:
+                raise ToolException(
+                    "Failed to fetch token price from CARV API with fallback."
                 )
-                if result.get("price") == 0:
-                    raise ToolException(
-                        "Failed to fetch token price from CARV API with fallback."
-                    )
-            except ToolException:
-                raise
 
         if "price" in result and amount is not None:
             return {

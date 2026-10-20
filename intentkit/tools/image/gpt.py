@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 class GPTImageBase(ImageBaseTool):
     """Base class for GPT image generation tools."""
 
+    # OpenRouter serves OpenAI image models only via /api/v1/images;
+    # chat completions rejects them.
+    openrouter_images_api: bool = True
+
     @override
     def has_native_key(self) -> bool:
         return bool(config.openai_api_key)
@@ -67,6 +71,7 @@ class GPTImageFlagship(GPTImageBase):
     """Generate images using GPT Image 2."""
 
     name: str = "image_gpt"
+    title: str = "GPT Image 2"
     description: str = "Generate images from text prompts using GPT Image 2."
     price: Decimal = Decimal("80")
     native_model: str = "gpt-image-2"
@@ -77,6 +82,7 @@ class GPTImageMini(GPTImageBase):
     """Generate images using GPT Image 1 Mini."""
 
     name: str = "image_gpt_mini"
+    title: str = "GPT Image 1 Mini"
     description: str = (
         "Generate images from text prompts using GPT Image 1 Mini (faster, cheaper)."
     )

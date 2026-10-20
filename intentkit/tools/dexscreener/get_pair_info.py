@@ -32,6 +32,7 @@ class GetPairInfo(DexScreenerBaseTool):
     """
 
     name: str = "dexscreener_get_pair_info"
+    title: str = "Get Pair Info"
     description: str = "Get detailed trading pair info (price, volume, liquidity, market cap) by chain ID and pair address."
     args_schema: ArgsSchema | None = GetPairInfoInput
 
@@ -104,13 +105,11 @@ class GetPairInfo(DexScreenerBaseTool):
                     }
                 )
 
-            except Exception as validation_error:
-                logger.error(
-                    "Failed to validate pair response for %s on %s: %s",
+            except Exception:
+                logger.exception(
+                    "Failed to validate pair response for %s on %s",
                     pair_address,
                     chain_id,
-                    validation_error,
-                    exc_info=True,
                 )
                 # Return raw data if validation fails
                 return format_success_response(
@@ -148,8 +147,9 @@ class GetPairInfo(DexScreenerBaseTool):
         self, e: Exception, query_info: str
     ) -> str:
         """Formats unexpected runtime exception details into a JSON string."""
-        logger.exception(
-            f"An unexpected runtime error occurred in get_pair_info tool _arun method for {query_info}: {e}"
+        logger.error(
+            f"An unexpected runtime error occurred in get_pair_info tool _arun method for {query_info}: {e}",
+            exc_info=e,
         )
         return create_error_response(
             error_type="runtime_error",

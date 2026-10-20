@@ -1,12 +1,11 @@
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Any, Callable, ClassVar
+from typing import Annotated, Any, ClassVar, Literal, get_args, override
 
-import yaml
 from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
@@ -14,11 +13,11 @@ from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
-from typing_extensions import override
 
 from intentkit.config.config import config
 from intentkit.models.app_setting import AppSetting
 from intentkit.utils.error import IntentKitAPIError
+from intentkit.utils.yaml import safe_load
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +31,9 @@ FOURPLACES = Decimal("0.0001")
 def load_default_llm_models() -> dict[str, "LLMModelInfo"]:
     """Load default LLM models from the bundled ``llm.yaml`` catalog.
 
-    Models are keyed by ``{provider}:{id}`` so that the same model ID from
-    different providers (e.g. ``deepseek-v4-flash`` via DeepSeek *and* OpenRouter)
-    is preserved as separate entries.
+    Models are keyed by ``{provider}:{id}`` so that the same model from
+    different providers (e.g. ``minimax`` via MiniMax and ``minimax/minimax``
+    via OpenRouter) is preserved as separate entries.
     """
 
     path = Path(__file__).with_name("llm.yaml")
@@ -43,7 +42,7 @@ def load_default_llm_models() -> dict[str, "LLMModelInfo"]:
         return {}
 
     with path.open(encoding="utf-8") as f:
-        rows: list[dict[str, Any]] = yaml.safe_load(f) or []
+        rows: list[dict[str, Any]] = safe_load(f) or []
 
     defaults: dict[str, LLMModelInfo] = {}
     for row in rows:
@@ -78,9 +77,6 @@ def load_default_llm_models() -> dict[str, "LLMModelInfo"]:
             "context_length": 200000,
             "output_length": 64000,
             "supports_image_input": False,
-            "supports_temperature": True,
-            "supports_frequency_penalty": True,
-            "supports_presence_penalty": True,
             "timeout": 300,
             "created_at": timestamp,
             "updated_at": timestamp,
@@ -125,9 +121,6 @@ def load_default_llm_models() -> dict[str, "LLMModelInfo"]:
             "context_length": 200000,
             "output_length": 64000,
             "supports_image_input": False,
-            "supports_temperature": True,
-            "supports_frequency_penalty": False,
-            "supports_presence_penalty": False,
             "timeout": 300,
             "created_at": timestamp,
             "updated_at": timestamp,
@@ -213,11 +206,26 @@ class LLMProvider(str, Enum):
         return display_names.get(self, self.value)
 
 
+# Unified reasoning/thinking effort scale (OpenRouter's enum), ordered weakest
+# to strongest. Agent-facing values; providers map or clamp them as needed.
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+REASONING_EFFORT_SCALE: tuple[str, ...] = get_args(ReasoningEffort)
+
+
 class LLMModelInfo(BaseModel):
     """Information about an LLM model."""
 
     id: str
     name: str
+    api_id: str = Field(
+        default_factory=lambda data: data.get("id", ""),
+        description=(
+            "Model id sent to the provider API. Defaults to ``id``; catalog "
+            "rows set it when the stable series id differs from the versioned "
+            "(or OpenRouter '~family-latest' alias) id the provider expects."
+        ),
+    )
     provider: LLMProvider
     origin_provider: str | None = Field(
         default=None,
@@ -226,36 +234,65 @@ class LLMModelInfo(BaseModel):
             "provider routing slug. None lets OpenRouter choose."
         ),
     )
+    legacy_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Retired model ids this model supersedes. Agents still storing "
+            "one of these ids are routed to this model at resolve time."
+        ),
+    )
     enabled: bool = Field(default=True)
+    selectable: bool = Field(
+        default=True,
+        description="Offer in model pickers; false retains explicit saved model requests.",
+    )
     input_price: Decimal  # Price per 1M input tokens in USD
     cached_input_price: Decimal | None = None  # Price per 1M cached input tokens in USD
-    cache_write_price: Decimal | None = None  # Price per 1M cache-write tokens in USD
     output_price: Decimal  # Price per 1M output tokens in USD
     price_level: int | None = Field(
         default=None, ge=1, le=5
     )  # Price level rating from 1-5
     context_length: int  # Maximum context length in tokens
     output_length: int  # Maximum output length in tokens
+    compress_cold: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "History token threshold that triggers compression when the "
+            "previous LLM request is more than a day old. None means the "
+            "default of 20,000 tokens."
+        ),
+    )
+    compress_warm: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "History token threshold that triggers compression when the "
+            "previous LLM request is within a day. None means 50% of "
+            "context_length."
+        ),
+    )
+    compress_hot: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "History token threshold that triggers compression when the "
+            "previous LLM request is within an hour. None means 80% of "
+            "context_length."
+        ),
+    )
     intelligence: int = Field(ge=1, le=5)  # Intelligence rating from 1-5
     speed: int = Field(ge=1, le=5)  # Speed rating from 1-5
     supports_image_input: bool = False
     supports_audio_input: bool = False
     supports_video_input: bool = False
     supports_file_input: bool = False
-    reasoning_effort: str | None = (
-        None  # Reasoning effort level: "xhigh", "high", "medium", "low", "minimal", "none", or None
-    )
-    thinking_modes: list[str] = Field(default_factory=list)
-    default_thinking_mode: str | None = None
-    supports_temperature: bool = (
-        True  # Whether the model supports temperature parameter
-    )
-    supports_frequency_penalty: bool = (
-        True  # Whether the model supports frequency_penalty parameter
-    )
-    supports_presence_penalty: bool = (
-        True  # Whether the model supports presence_penalty parameter
-    )
+    # Default effort when the agent doesn't set one. "none" means the model
+    # runs without reasoning; None means not applicable.
+    reasoning_effort: ReasoningEffort | None = None
+    # Efforts this model actually supports (per the provider's official docs).
+    # Requests are clamped to the nearest member; None passes them through.
+    reasoning_levels: list[ReasoningEffort] | None = None
     timeout: int = 180  # Default timeout in seconds
     created_at: Annotated[
         datetime,
@@ -277,6 +314,62 @@ class LLMModelInfo(BaseModel):
     def serialize_datetime(cls, v: datetime) -> str:
         return v.isoformat(timespec="milliseconds")
 
+    def resolve_reasoning_effort(
+        self, requested: ReasoningEffort | None
+    ) -> ReasoningEffort | None:
+        """Effective effort for a request: the agent's choice clamped to what
+        this model supports, falling back to the catalog default when unset.
+
+        A "none" request against a model that cannot disable reasoning clamps
+        to the weakest supported level. Other unsupported values go to the
+        nearest supported level, preferring non-"none" members (ties round
+        up), so a positive request only lands on "none" when the model
+        supports nothing else.
+        """
+        effort = requested or self.reasoning_effort
+        if effort is None or not self.reasoning_levels:
+            return effort
+        if effort in self.reasoning_levels:
+            return effort
+        candidates: list[ReasoningEffort] = [
+            lv for lv in self.reasoning_levels if lv != "none"
+        ]
+        if effort == "none" or not candidates:
+            return min(self.reasoning_levels, key=REASONING_EFFORT_SCALE.index)
+        idx = REASONING_EFFORT_SCALE.index(effort)
+        return min(
+            candidates,
+            key=lambda lv: (
+                abs(REASONING_EFFORT_SCALE.index(lv) - idx),
+                -REASONING_EFFORT_SCALE.index(lv),
+            ),
+        )
+
+    def compress_thresholds(self) -> tuple[int, int, int]:
+        """Effective (cold, warm, hot) history-compression thresholds in tokens.
+
+        Defaults: cold 20,000 tokens, warm 50% of context, hot 80% of context;
+        each is overridable per model via ``compress_cold/warm/hot``. The
+        values are clamped downward so that cold <= warm <= hot always holds
+        (relevant for small-context models where 50% of context is below the
+        20k cold default).
+        """
+        hot = (
+            self.compress_hot
+            if self.compress_hot is not None
+            else int(self.context_length * 0.8)
+        )
+        warm = min(
+            self.compress_warm
+            if self.compress_warm is not None
+            else int(self.context_length * 0.5),
+            hot,
+        )
+        cold = min(
+            self.compress_cold if self.compress_cold is not None else 20_000, warm
+        )
+        return cold, warm, hot
+
     @staticmethod
     async def get(model_id: str) -> "LLMModelInfo":
         """Get a model by ID from the in-memory catalog.
@@ -285,8 +378,9 @@ class LLMModelInfo(BaseModel):
 
         1. Exact key — supports both the composite ``provider:id`` key and a
            legacy bare ``id``.
-        2. Backward-compatible fallback by bare model id; when several providers
-           expose the same id, native providers are preferred over OpenRouter.
+        2. Backward-compatible fallback via the id index (bare ids, base names
+           after "/", and ``legacy_ids`` of superseding models); when several
+           providers match, native providers are preferred over OpenRouter.
 
         Args:
             model_id: ID of the model to retrieve.
@@ -298,24 +392,27 @@ class LLMModelInfo(BaseModel):
         if model_id in AVAILABLE_MODELS:
             return AVAILABLE_MODELS[model_id]
 
-        # Backward-compatible fallback: match by bare model id.
-        # If multiple providers have the same model id, prefer native over OpenRouter.
-        matching_keys = _MODEL_ID_INDEX.get(model_id, [])
-        fallback: LLMModelInfo | None = None
-        for key in matching_keys:
-            candidate = AVAILABLE_MODELS[key]
-            if fallback is None or (
-                fallback.provider == LLMProvider.OPENROUTER
-                and candidate.provider != LLMProvider.OPENROUTER
-            ):
-                fallback = candidate
-        if fallback is not None:
-            logger.debug(
-                "Model %s resolved via index to %s:%s",
-                model_id,
-                fallback.provider.value,
-                fallback.id,
-            )
+        key = _resolve_catalog_key(model_id)
+        if key is not None:
+            fallback = AVAILABLE_MODELS[key]
+            base = fallback.id.rsplit("/", 1)[1] if "/" in fallback.id else fallback.id
+            if model_id in (fallback.id, base):
+                logger.debug(
+                    "Model %s resolved via index to %s:%s",
+                    model_id,
+                    fallback.provider.value,
+                    fallback.id,
+                )
+            else:
+                # Legacy id routed to its successor: pricing/capabilities
+                # differ from what the agent originally stored, so keep this
+                # visible in logs.
+                logger.info(
+                    "Legacy model id %s routed to %s:%s",
+                    model_id,
+                    fallback.provider.value,
+                    fallback.id,
+                )
             return fallback
 
         # Not found anywhere
@@ -331,13 +428,10 @@ class LLMModelInfo(BaseModel):
 
         Kept ``async`` (despite no I/O) so the awaited call sites stay stable.
         """
-        return list(AVAILABLE_MODELS.values())
+        return [model for model in AVAILABLE_MODELS.values() if model.selectable]
 
     async def calculate_cost(
-        self,
-        input_tokens: int,
-        output_tokens: int,
-        cached_input_tokens: int = 0,
+        self, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0
     ) -> Decimal:
         """Calculate the cost for a given number of tokens."""
         global credit_per_usdc
@@ -378,10 +472,7 @@ class LLMModelInfo(BaseModel):
         )
 
     def cost_usd(
-        self,
-        input_tokens: int,
-        output_tokens: int,
-        cached_input_tokens: int = 0,
+        self, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0
     ) -> Decimal:
         """USD cost for a generation's token usage.
 
@@ -408,18 +499,91 @@ class LLMModelInfo(BaseModel):
 # Default models loaded from the YAML catalog
 AVAILABLE_MODELS = load_default_llm_models()
 
-# Reverse index: model id → list of composite keys in AVAILABLE_MODELS.
-# Indexed by both full id (e.g. "openai/gpt-5.4-mini") and base name after "/"
-# (e.g. "gpt-5.4-mini") for backward compatibility with legacy agent configs.
-_MODEL_ID_INDEX: dict[str, list[str]] = {}
-for _key, _model in AVAILABLE_MODELS.items():
-    _MODEL_ID_INDEX.setdefault(_model.id, []).append(_key)
-    if "/" in _model.id:
-        _base = _model.id.rsplit("/", 1)[1]
-        _MODEL_ID_INDEX.setdefault(_base, []).append(_key)
 
-# USD cost per single web search call, by provider.
-# OpenRouter bundles search cost in token billing — no separate charge.
+def build_model_id_index(models: dict[str, "LLMModelInfo"]) -> dict[str, list[str]]:
+    """Build the reverse index: model id → list of composite keys in ``models``.
+
+    Each model is indexed by its full id (e.g. "openai/gpt-luna"), the base
+    name after "/" (e.g. "gpt-luna"), its ``api_id`` the same way (the
+    versioned id providers report back, e.g. "gemini-3.8-flash"), and its
+    ``legacy_ids`` (retired ids routed to their successor), so agents storing
+    any of those keep resolving. A legacy id (or its base name) that collides
+    with anything a live model claims is ignored — the live model always wins.
+    """
+    index: dict[str, list[str]] = {}
+
+    for key, model in models.items():
+        for claimed in {model.id, model.api_id}:
+            index.setdefault(claimed, []).append(key)
+            if "/" in claimed:
+                index.setdefault(claimed.rsplit("/", 1)[1], []).append(key)
+
+    # Everything live models claim (full ids and base names); legacy routing
+    # must never shadow these. Snapshot before adding any legacy entry so the
+    # guard does not depend on catalog order.
+    live_claims = set(index)
+
+    for key, model in models.items():
+        for legacy in model.legacy_ids:
+            if legacy in live_claims:
+                logger.warning(
+                    "legacy id %s on %s collides with a live model id; ignored",
+                    legacy,
+                    model.id,
+                )
+                continue
+            index.setdefault(legacy, []).append(key)
+            if "/" in legacy:
+                base = legacy.rsplit("/", 1)[1]
+                if base not in live_claims:
+                    index.setdefault(base, []).append(key)
+    return index
+
+
+_MODEL_ID_INDEX: dict[str, list[str]] = build_model_id_index(AVAILABLE_MODELS)
+
+
+def _resolve_catalog_key(model_id: str) -> str | None:
+    """Composite catalog key for ``model_id`` via the id index, or None.
+
+    Matches bare ids, base names after "/", and legacy ids. When several
+    providers match, native providers are preferred over OpenRouter.
+    """
+    if model_id in AVAILABLE_MODELS:
+        return model_id
+    winner: str | None = None
+    for key in _MODEL_ID_INDEX.get(model_id, []):
+        if winner is None or (
+            AVAILABLE_MODELS[winner].provider == LLMProvider.OPENROUTER
+            and AVAILABLE_MODELS[key].provider != LLMProvider.OPENROUTER
+        ):
+            winner = key
+    return winner
+
+
+def is_model_resolvable(model_id: str) -> bool:
+    """Whether ``LLMModelInfo.get`` would resolve this id in this deployment.
+
+    Covers composite keys, bare ids, base names after "/", and legacy ids.
+    """
+    return model_id in AVAILABLE_MODELS or model_id in _MODEL_ID_INDEX
+
+
+def resolve_model_id(model_id: str) -> str:
+    """Live catalog id for ``model_id``; unknown ids are returned unchanged.
+
+    Legacy and base-name ids are normalized to the current series id the same
+    way ``LLMModelInfo.get`` routes them, so stored agent configs read back
+    with the id the catalog (and the model picker) knows.
+    """
+    key = _resolve_catalog_key(model_id)
+    return AVAILABLE_MODELS[key].id if key is not None else model_id
+
+
+# USD cost per single provider-billed server-side web search call. Only
+# providers whose native search tool we use appear here. OpenRouter, deepseek,
+# minimax, etc. run our client-side web_search tool instead, whose cost is
+# accounted by that tool, so they have no entry.
 _SEARCH_PRICE_BY_PROVIDER: dict[LLMProvider, Decimal] = {
     LLMProvider.OPENAI: Decimal("0.01"),
     LLMProvider.GOOGLE: Decimal("0.014"),
@@ -432,17 +596,25 @@ def get_search_price(provider: LLMProvider) -> Decimal | None:
     return _SEARCH_PRICE_BY_PROVIDER.get(provider)
 
 
+async def usd_to_credits(usd: Decimal) -> Decimal:
+    """Convert a USD amount to credits at the configured rate.
+
+    The single place that knows the credit unit, for costs a provider reports
+    in dollars (metered tool calls, per-call search pricing). Uses the same
+    process-lifetime rate cache as token pricing above.
+    """
+    global credit_per_usdc
+    if not credit_per_usdc:
+        credit_per_usdc = (await AppSetting.payment()).credit_per_usdc
+    return (credit_per_usdc * usd).quantize(FOURPLACES, rounding=ROUND_HALF_UP)
+
+
 async def calculate_search_cost(provider: LLMProvider, search_count: int) -> Decimal:
     """Calculate credit cost for web search calls based on provider pricing."""
     price = get_search_price(provider)
     if not price or search_count <= 0:
         return Decimal("0")
-    global credit_per_usdc
-    if not credit_per_usdc:
-        credit_per_usdc = (await AppSetting.payment()).credit_per_usdc
-    return (credit_per_usdc * Decimal(search_count) * price).quantize(
-        FOURPLACES, rounding=ROUND_HALF_UP
-    )
+    return await usd_to_credits(Decimal(search_count) * price)
 
 
 class LLMModel(BaseModel):
@@ -451,9 +623,10 @@ class LLMModel(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(from_attributes=True)
 
     model_name: str
-    temperature: float = 0.7
-    frequency_penalty: float = 0.0
-    presence_penalty: float = 0.0
+    # Agent-requested reasoning effort (unified scale); None follows the
+    # model's catalog default. Resolved per request via
+    # ``info.resolve_reasoning_effort``.
+    reasoning_effort: ReasoningEffort | None = None
     info: LLMModelInfo
 
     async def model_info(self) -> LLMModelInfo:
@@ -465,9 +638,8 @@ class LLMModel(BaseModel):
         return model_info
 
     # This will be implemented by subclasses to return the appropriate LLM instance
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return the LLM instance based on the configuration."""
-        _ = params
         raise NotImplementedError("Subclasses must implement create_instance")
 
     async def get_token_limit(self) -> int:
@@ -476,10 +648,7 @@ class LLMModel(BaseModel):
         return info.context_length
 
     async def calculate_cost(
-        self,
-        input_tokens: int,
-        output_tokens: int,
-        cached_input_tokens: int = 0,
+        self, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0
     ) -> Decimal:
         """Calculate the cost for a given number of tokens."""
         info = await self.model_info()
@@ -492,35 +661,24 @@ class OpenAILLM(LLMModel):
     """OpenAI LLM configuration."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatOpenAI instance."""
         from langchain_openai import ChatOpenAI
 
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model_name": info.id,
+            "model_name": info.api_id,
             "openai_api_key": config.openai_api_key,
             "timeout": info.timeout,
             "max_retries": 3,
             "use_responses_api": True,
         }
 
-        # Add optional parameters based on model support
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        if info.supports_frequency_penalty:
-            kwargs["frequency_penalty"] = self.frequency_penalty
-
-        if info.supports_presence_penalty:
-            kwargs["presence_penalty"] = self.presence_penalty
-
-        if info.reasoning_effort and info.reasoning_effort != "none":
-            kwargs["reasoning_effort"] = info.reasoning_effort
-
-        # Update kwargs with params to allow overriding
-        kwargs.update(params)
+        # GPT-5.6 accepts the full scale including an explicit "none".
+        effort = info.resolve_reasoning_effort(self.reasoning_effort)
+        if effort is not None:
+            kwargs["reasoning_effort"] = effort
 
         logger.debug("Creating ChatOpenAI instance with kwargs: %s", kwargs)
 
@@ -531,7 +689,7 @@ class DeepseekLLM(LLMModel):
     """Deepseek LLM configuration."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatDeepseek instance."""
 
         from langchain_deepseek import ChatDeepSeek
@@ -539,24 +697,23 @@ class DeepseekLLM(LLMModel):
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model": info.id,
+            "model": info.api_id,
             "api_key": config.deepseek_api_key,
             "timeout": info.timeout,
             "max_retries": 3,
         }
 
-        # Add optional parameters based on model support
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        if info.supports_frequency_penalty:
-            kwargs["frequency_penalty"] = self.frequency_penalty
-
-        if info.supports_presence_penalty:
-            kwargs["presence_penalty"] = self.presence_penalty
-
-        # Update kwargs with params to allow overriding
-        kwargs.update(params)
+        # DeepSeek V4 defaults to thinking mode server-side; pass the toggle
+        # explicitly so non-reasoning requests actually run without it.
+        effort = info.resolve_reasoning_effort(self.reasoning_effort)
+        if effort and effort != "none":
+            kwargs["extra_body"] = {
+                "thinking": {"type": "enabled"},
+                # DeepSeek accepts high|max; the clamp keeps values in range.
+                "reasoning_effort": effort,
+            }
+        else:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         return ChatDeepSeek(**kwargs)
 
@@ -565,14 +722,14 @@ class XAILLM(LLMModel):
     """XAI (Grok) LLM configuration."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatOpenAI instance configured for xAI."""
         from langchain_openai import ChatOpenAI
 
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model_name": info.id,
+            "model_name": info.api_id,
             "openai_api_key": config.xai_api_key,
             "openai_api_base": "https://api.x.ai/v1",
             "timeout": info.timeout,
@@ -580,18 +737,11 @@ class XAILLM(LLMModel):
             "use_responses_api": True,
         }
 
-        # Add optional parameters based on model support
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        if info.supports_frequency_penalty:
-            kwargs["frequency_penalty"] = self.frequency_penalty
-
-        if info.supports_presence_penalty:
-            kwargs["presence_penalty"] = self.presence_penalty
-
-        # Update kwargs with params to allow overriding
-        kwargs.update(params)
+        # Grok reasoning cannot be disabled and rejects "none"; the clamp
+        # (levels low/medium/high) guarantees a value xAI accepts.
+        effort = info.resolve_reasoning_effort(self.reasoning_effort)
+        if effort and effort != "none":
+            kwargs["reasoning_effort"] = effort
 
         from langchain_core.utils.function_calling import convert_to_openai_tool
 
@@ -641,12 +791,8 @@ class XAILLM(LLMModel):
                             }
                         ]
                         # if no tools left, reset finish_reason
-                        if not message.tool_calls:
-                            if (
-                                hasattr(generation, "generation_info")
-                                and generation.generation_info
-                            ):
-                                generation.generation_info["finish_reason"] = "stop"
+                        if not message.tool_calls and generation.generation_info:
+                            generation.generation_info["finish_reason"] = "stop"
                 return result
 
             @override
@@ -675,12 +821,8 @@ class XAILLM(LLMModel):
                             }
                         ]
                         # if no tools left, reset finish_reason
-                        if not message.tool_calls:
-                            if (
-                                hasattr(generation, "generation_info")
-                                and generation.generation_info
-                            ):
-                                generation.generation_info["finish_reason"] = "stop"
+                        if not message.tool_calls and generation.generation_info:
+                            generation.generation_info["finish_reason"] = "stop"
                 return result
 
         return ChatXAIAdapter(**kwargs)
@@ -690,13 +832,14 @@ class OpenRouterLLM(LLMModel):
     """OpenRouter LLM configuration."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
-        """Create and return a ChatOpenRouter instance with server tool support."""
+    async def create_instance(self) -> BaseChatModel:
+        """Create and return a ChatOpenRouter instance."""
+        from langchain_openrouter import ChatOpenRouter
 
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model": info.id,
+            "model": info.api_id,
             "api_key": config.openrouter_api_key,
             "timeout": info.timeout * 1000,
             "max_retries": 3,
@@ -707,18 +850,23 @@ class OpenRouterLLM(LLMModel):
             "app_categories": ["cloud-agent"],
         }
 
-        # Add optional parameters based on model support
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        if info.supports_frequency_penalty:
-            kwargs["frequency_penalty"] = self.frequency_penalty
-
-        if info.supports_presence_penalty:
-            kwargs["presence_penalty"] = self.presence_penalty
-
-        if info.reasoning_effort:
-            kwargs["reasoning"] = {"effort": info.reasoning_effort}
+        # Flash always thinks; reject unsupported explicit values rather than
+        # silently turning a request for disabled thinking into a thinking run.
+        if (
+            info.api_id == "minimax/minimax-m3.1-flash:free"
+            and self.reasoning_effort
+            in {
+                "none",
+                "minimal",
+            }
+        ):
+            raise ValueError(
+                "MiniMax-M3.1-Flash requires low/medium/high/xhigh/max effort"
+            )
+        # Other models retain OpenRouter's normal effort clamping.
+        effort = info.resolve_reasoning_effort(self.reasoning_effort)
+        if effort is not None:
+            kwargs["reasoning"] = {"effort": effort}
 
         # Pin the upstream provider on OpenRouter when configured; otherwise leave
         # routing to OpenRouter. allow_fallbacks=False makes it a hard lock so the
@@ -729,106 +877,14 @@ class OpenRouterLLM(LLMModel):
                 "allow_fallbacks": False,
             }
 
-        # Update kwargs with params to allow overriding
-        kwargs.update(params)
-
-        return _create_openrouter_with_server_tools(**kwargs)
-
-
-_openrouter_usage_cost_fields_injected = False
-
-
-def _inject_cost_fields_into_chat_usage() -> None:
-    """Add ``cost`` / ``cost_details`` to the SDK's ``ChatUsage`` schema.
-
-    OpenRouter's ``/chat/completions`` response includes ``cost`` inside the
-    ``usage`` object, but ``openrouter`` SDK's generated ``ChatUsage`` model
-    (v0.9.1) does not declare those fields, so Pydantic validation drops them
-    and ``langchain-openrouter`` never surfaces them in ``response_metadata``.
-
-    Injecting the fields lets cost round-trip without a fork. Remove this
-    helper once the SDK adds the fields natively.
-    """
-    global _openrouter_usage_cost_fields_injected  # noqa: PLW0603
-    if _openrouter_usage_cost_fields_injected:
-        return
-    try:
-        from openrouter.components import ChatUsage  # type: ignore[import-untyped]
-        from pydantic.fields import FieldInfo
-
-        if "cost" in ChatUsage.model_fields:
-            _openrouter_usage_cost_fields_injected = True
-            return
-        cost_type: Any = float | None
-        cost_details_type: Any = dict[str, Any] | None
-        ChatUsage.__annotations__["cost"] = cost_type
-        ChatUsage.__annotations__["cost_details"] = cost_details_type
-        ChatUsage.model_fields["cost"] = FieldInfo(annotation=cost_type, default=None)
-        ChatUsage.model_fields["cost_details"] = FieldInfo(
-            annotation=cost_details_type, default=None
-        )
-        ChatUsage.model_rebuild(force=True)
-        _openrouter_usage_cost_fields_injected = True
-    except Exception:
-        logger.warning(
-            "Failed to inject cost fields into OpenRouter ChatUsage", exc_info=True
-        )
-
-
-def _create_openrouter_with_server_tools(**kwargs: Any) -> BaseChatModel:
-    """Create a ChatOpenRouter subclass that supports server tools.
-
-    OpenRouter server tools (e.g. ``{"type": "openrouter:web_search"}``) are
-    not recognised by ``convert_to_openai_tool`` used inside the upstream
-    ``ChatOpenRouter.bind_tools``. This subclass overrides ``bind_tools`` to
-    pull server-tool dicts out, delegate the rest to the parent, and re-inject
-    the server tools into the bound kwargs so they are sent as-is in the API
-    request.
-
-    The underlying ``openrouter`` SDK (>=0.8.0) exposes ``ChatFunctionTool`` as
-    a discriminated union that natively accepts the ``openrouter:`` server-tool
-    types we use, so no SDK-level patch is required for tool types.
-    """
-    from langchain_openrouter import ChatOpenRouter
-
-    _inject_cost_fields_into_chat_usage()
-
-    class _WithServerTools(ChatOpenRouter):
-        @override
-        def bind_tools(
-            self,
-            tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
-            **bt_kwargs: Any,
-        ) -> Runnable[LanguageModelInput, AIMessage]:
-            server_tools: list[dict[str, Any]] = []
-            regular_tools: list[dict[str, Any] | type | Callable | BaseTool] = []
-            for tool in tools:
-                if (
-                    isinstance(tool, dict)
-                    and isinstance(tool.get("type"), str)
-                    and tool["type"].startswith("openrouter:")
-                ):
-                    server_tools.append(tool)
-                else:
-                    regular_tools.append(tool)
-
-            bound = super().bind_tools(regular_tools, **bt_kwargs)
-
-            if server_tools:
-                bound_kwargs: dict[str, Any] = bound.kwargs  # pyright: ignore[reportAttributeAccessIssue]
-                existing = list(bound_kwargs.get("tools", []))
-                updated = {k: v for k, v in bound_kwargs.items() if k != "tools"}
-                return self.bind(tools=existing + server_tools, **updated)
-            return bound
-
-    return _WithServerTools(**kwargs)
+        return ChatOpenRouter(**kwargs)
 
 
 class GoogleLLM(LLMModel):
     """Google LLM configuration."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatGoogleGenerativeAI instance."""
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -836,7 +892,7 @@ class GoogleLLM(LLMModel):
         use_vertexai = config.google_genai_use_vertexai is True
 
         kwargs: dict[str, Any] = {
-            "model": info.id,
+            "model": info.api_id,
             "api_key": config.google_api_key,
             "timeout": info.timeout,
             "max_retries": 3,
@@ -846,43 +902,31 @@ class GoogleLLM(LLMModel):
             if config.google_cloud_project:
                 kwargs["project"] = config.google_cloud_project
 
-        # Add optional parameters based on model support
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        # Update kwargs with params to allow overriding
-        kwargs.update(params)
+        # Gemini takes thinking_level minimal..high; the clamp (catalog
+        # reasoning_levels) keeps values inside each model's supported range.
+        effort = info.resolve_reasoning_effort(self.reasoning_effort)
+        if effort and effort != "none":
+            kwargs["thinking_level"] = effort
 
         return ChatGoogleGenerativeAI(**kwargs)
 
 
-# Factory function to create the appropriate LLM model based on the model name
 class OllamaLLM(LLMModel):
     """Ollama LLM configuration."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatOllama instance."""
         from langchain_ollama import ChatOllama
 
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model": info.id,
+            "model": info.api_id,
             "base_url": "http://localhost:11434",
-            "temperature": self.temperature,
             # Ollama specific parameters
             "keep_alive": -1,  # Keep the model loaded indefinitely
         }
-
-        if info.supports_frequency_penalty:
-            kwargs["frequency_penalty"] = self.frequency_penalty
-
-        if info.supports_presence_penalty:
-            kwargs["presence_penalty"] = self.presence_penalty
-
-        # Update kwargs with params to allow overriding
-        kwargs.update(params)
 
         return ChatOllama(**kwargs)
 
@@ -891,26 +935,35 @@ class MiniMaxLLM(LLMModel):
     """MiniMax LLM configuration using Anthropic-compatible API."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatAnthropic instance for MiniMax."""
         from langchain_anthropic import ChatAnthropic
 
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model": info.id,
+            "model": info.api_id,
             "api_key": config.minimax_plan_api_key,
-            "base_url": config.minimax_plan_base_url,
+            "base_url": config.minimax_base_url,
             "timeout": info.timeout,
             "max_retries": 3,
         }
 
-        # Add optional parameters based on model support
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        # Update kwargs with params to allow overriding
-        kwargs.update(params)
+        if info.api_id == "MiniMax-M3.1-Flash":
+            effort = self.reasoning_effort or info.reasoning_effort or "max"
+            if effort not in {"low", "medium", "high", "xhigh", "max"}:
+                raise ValueError(
+                    "MiniMax-M3.1-Flash requires low/medium/high/xhigh/max effort"
+                )
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": effort}
+        elif info.api_id != "MiniMax-M2.7":
+            # M2.7 keeps its always-on default. M3 ignores effort depth;
+            # keep the saved M3 agent's thinking toggle.
+            effort = info.resolve_reasoning_effort(self.reasoning_effort)
+            kwargs["thinking"] = {
+                "type": "adaptive" if effort and effort != "none" else "disabled"
+            }
 
         return ChatAnthropic(**kwargs)
 
@@ -919,30 +972,28 @@ class MimoPlanLLM(LLMModel):
     """Xiaomi MiMo Token Plan LLM configuration (OpenAI-compatible API)."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatOpenAI instance configured for MiMo."""
         from langchain_openai import ChatOpenAI
 
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model_name": info.id,
+            "model_name": info.api_id,
             "openai_api_key": config.mimo_plan_api_key,
             "openai_api_base": "https://api.xiaomimimo.com/v1",
             "timeout": info.timeout,
             "max_retries": 3,
         }
 
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        if info.supports_frequency_penalty:
-            kwargs["frequency_penalty"] = self.frequency_penalty
-
-        if info.supports_presence_penalty:
-            kwargs["presence_penalty"] = self.presence_penalty
-
-        kwargs.update(params)
+        # MiMo V2.5 defaults to thinking mode server-side; pass the toggle
+        # explicitly so "none" requests actually run without it.
+        effort = info.resolve_reasoning_effort(self.reasoning_effort)
+        kwargs["extra_body"] = {
+            "thinking": {
+                "type": "enabled" if effort and effort != "none" else "disabled"
+            }
+        }
 
         return ChatOpenAI(**kwargs)
 
@@ -951,26 +1002,19 @@ class AnthropicCompatibleLLM(LLMModel):
     """Anthropic Compatible LLM configuration."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatAnthropic instance for Anthropic-compatible provider."""
         from langchain_anthropic import ChatAnthropic
 
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model": info.id,
+            "model": info.api_id,
             "api_key": config.anthropic_compatible_api_key,
             "base_url": config.anthropic_compatible_base_url,
             "timeout": info.timeout,
             "max_retries": 3,
         }
-
-        # Add optional parameters based on model support
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        # Update kwargs with params to allow overriding
-        kwargs.update(params)
 
         return ChatAnthropic(**kwargs)
 
@@ -979,14 +1023,14 @@ class OpenAICompatibleLLM(LLMModel):
     """OpenAI Compatible LLM configuration."""
 
     @override
-    async def create_instance(self, params: dict[str, Any] = {}) -> BaseChatModel:
+    async def create_instance(self) -> BaseChatModel:
         """Create and return a ChatOpenAI instance for OpenAI-compatible provider."""
         from langchain_openai import ChatOpenAI
 
         info = await self.model_info()
 
         kwargs: dict[str, Any] = {
-            "model_name": info.id,
+            "model_name": info.api_id,
             "openai_api_base": config.openai_compatible_base_url,
             "timeout": info.timeout,
             "max_retries": 3,
@@ -994,19 +1038,9 @@ class OpenAICompatibleLLM(LLMModel):
 
         kwargs["openai_api_key"] = config.openai_compatible_api_key
 
-        if info.supports_temperature:
-            kwargs["temperature"] = self.temperature
-
-        if info.supports_frequency_penalty:
-            kwargs["frequency_penalty"] = self.frequency_penalty
-
-        if info.supports_presence_penalty:
-            kwargs["presence_penalty"] = self.presence_penalty
-
-        if info.reasoning_effort and info.reasoning_effort != "none":
+        effort = info.resolve_reasoning_effort(self.reasoning_effort)
+        if effort and effort != "none":
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-
-        kwargs.update(params)
 
         return ChatOpenAI(**kwargs)
 
@@ -1014,18 +1048,15 @@ class OpenAICompatibleLLM(LLMModel):
 # Factory function to create the appropriate LLM model based on the model name
 async def create_llm_model(
     model_name: str,
-    temperature: float = 0.7,
-    frequency_penalty: float = 0.0,
-    presence_penalty: float = 0.0,
+    reasoning_effort: ReasoningEffort | None = None,
 ) -> LLMModel:
     """
     Create an LLM model instance based on the model name.
 
     Args:
         model_name: The name of the model to use
-        temperature: The temperature parameter for the model
-        frequency_penalty: The frequency penalty parameter for the model
-        presence_penalty: The presence penalty parameter for the model
+        reasoning_effort: Requested reasoning effort (unified scale); None
+            follows the model's catalog default
 
     Returns:
         An instance of a subclass of LLMModel
@@ -1049,9 +1080,7 @@ async def create_llm_model(
 
     return model_class(
         model_name=model_name,
-        temperature=temperature,
-        frequency_penalty=frequency_penalty,
-        presence_penalty=presence_penalty,
+        reasoning_effort=reasoning_effort,
         info=info,
     )
 
@@ -1086,10 +1115,10 @@ def _resolve_generation_cost(response: object) -> float | None:
         model_name = metadata.get("model_name") or metadata.get("model")
         if isinstance(model_name, str) and model_name.startswith("models/"):
             model_name = model_name[len("models/") :]
-        keys = _MODEL_ID_INDEX.get(model_name) if model_name else None
-        info = AVAILABLE_MODELS.get(keys[0]) if keys else None
-        if info is None:
+        key = _resolve_catalog_key(model_name) if model_name else None
+        if key is None:
             return None
+        info = AVAILABLE_MODELS[key]
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
         cached = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
@@ -1106,4 +1135,4 @@ try:
 
     set_generation_cost_resolver(_resolve_generation_cost)
 except Exception:  # pragma: no cover - tracing is optional
-    pass
+    logger.debug("Tracing unavailable; generation cost resolver not registered")

@@ -28,6 +28,7 @@ class TokenAnalytics(TokenBaseTool):
     """
 
     name: str = "token_analytics"
+    title: str = "Token Analytics"
     description: str = (
         "Get token analytics: trading volume, buyers/sellers, and liquidity."
     )
@@ -75,5 +76,5 @@ class TokenAnalytics(TokenBaseTool):
         except Exception as e:
             logger.error("Error fetching token analytics: %s", e)
             return {
-                "error": f"An error occurred while fetching token analytics: {str(e)}. Please try again later."
+                "error": f"An error occurred while fetching token analytics: {e!s}. Please try again later."
             }

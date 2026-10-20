@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from intentkit.config.config import config
 from intentkit.core.budget import accumulate_hourly_base_llm_amount
 from intentkit.models.agent import Agent
-from intentkit.models.agent_data import AgentData, AgentQuota
+from intentkit.models.agent_data import AgentQuota
 from intentkit.models.app_setting import AppSetting
 from intentkit.models.credit import (
     DEFAULT_PLATFORM_ACCOUNT_FEE,
@@ -293,9 +293,8 @@ async def expense_message(
             )
 
     # --- SHARED STEP 9: Create CreditEvent record with full breakdown ---
-    # Get agent wallet address
-    agent_data = await AgentData.get(agent.id)
-    agent_wallet_address = agent_data.evm_wallet_address if agent_data else None
+    # Agents no longer have an identity wallet; the field stays for history.
+    agent_wallet_address = None
 
     # MESSAGE-SPECIFIC: event_type=MESSAGE, records base_llm_amount
     event = CreditEventTable(
@@ -673,9 +672,8 @@ async def expense_tool(
     # --- SHARED STEP 9: Create CreditEvent record with full breakdown ---
     # TOOL-SPECIFIC: event_type=TOOL_CALL, records base_tool_amount and tool metadata
 
-    # Get agent wallet address
-    agent_data = await AgentData.get(agent.id)
-    agent_wallet_address = agent_data.evm_wallet_address if agent_data else None
+    # Agents no longer have an identity wallet; the field stays for history.
+    agent_wallet_address = None
 
     event = CreditEventTable(
         id=event_id,
@@ -1012,9 +1010,8 @@ async def expense_summarize(
     # --- SHARED STEP 9: Create CreditEvent record with full breakdown ---
     # SUMMARIZE-SPECIFIC: event_type=MEMORY, records base_llm_amount
 
-    # Get agent wallet address
-    agent_data = await AgentData.get(agent.id)
-    agent_wallet_address = agent_data.evm_wallet_address if agent_data else None
+    # Agents no longer have an identity wallet; the field stays for history.
+    agent_wallet_address = None
 
     event = CreditEventTable(
         id=event_id,

@@ -16,6 +16,7 @@ from intentkit.tools.aave_v3.utils import (
     get_decimals,
     get_token_symbol,
 )
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 NAME = "aave_v3_supply"
 
@@ -23,6 +24,7 @@ NAME = "aave_v3_supply"
 class SupplyInput(BaseModel):
     """Input for Aave V3 supply."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_address: str = Field(description="ERC20 token contract address to supply")
     amount: str = Field(
         description="Amount in human-readable units (e.g. '100' for 100 USDC)"
@@ -33,6 +35,8 @@ class AaveV3Supply(AaveV3BaseTool):
     """Supply (deposit) tokens into Aave V3 as collateral."""
 
     name: str = NAME
+    title: str = "Supply"
+    team_only: bool = True
     description: str = (
         "Supply (deposit) tokens into Aave V3 lending protocol. "
         "The supplied tokens earn interest and can be used as collateral for borrowing. "
@@ -43,19 +47,21 @@ class AaveV3Supply(AaveV3BaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_address: str,
         amount: str,
         **kwargs: Any,
     ) -> str:
         try:
-            chain_id = self._resolve_chain_id()
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
+            wallet = await self.get_unified_wallet(wallet_address)
+            network_id = wallet.network_id
+            chain_id = self._resolve_chain_id(network_id)
+            w3 = wallet.w3
 
             pool_address = POOL_ADDRESSES[chain_id]
             checksum_token = Web3.to_checksum_address(token_address)
             checksum_pool = Web3.to_checksum_address(pool_address)
-            wallet_address = Web3.to_checksum_address(wallet.address)
+            checksum_wallet = Web3.to_checksum_address(wallet.address)
 
             decimals, symbol = await asyncio.gather(
                 get_decimals(w3, checksum_token, chain_id),
@@ -70,7 +76,7 @@ class AaveV3Supply(AaveV3BaseTool):
             pool = w3.eth.contract(address=checksum_pool, abi=POOL_ABI)
             supply_data = pool.encode_abi(
                 "supply",
-                [checksum_token, amount_raw, wallet_address, 0],
+                [checksum_token, amount_raw, checksum_wallet, 0],
             )
 
             tx_hash = await wallet.send_transaction(
@@ -85,7 +91,7 @@ class AaveV3Supply(AaveV3BaseTool):
             return (
                 f"**Aave V3 Supply**\n"
                 f"Supplied: {amount} {symbol}\n"
-                f"Network: {self.get_agent_network_id()}\n"
+                f"Network: {network_id}\n"
                 f"Tx: {tx_hash}"
             )
 

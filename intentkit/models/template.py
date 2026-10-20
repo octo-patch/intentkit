@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, ClassVar
 
 from pydantic import ConfigDict
 from pydantic import Field as PydanticField
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, DateTime, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,78 +53,29 @@ class TemplateTable(Base):
         nullable=True,
         comment="Avatar of the template",
     )
-    purpose: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Purpose or role of the template",
-    )
-    personality: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Personality traits of the template",
-    )
-    principles: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Principles or values of the template",
-    )
     model: Mapped[str] = mapped_column(
         String,
         nullable=False,
         default=pick_default_model,
         comment="LLM of the template",
     )
-    prompt: Mapped[str | None] = mapped_column(
+    reasoning_effort: Mapped[str | None] = mapped_column(
         String,
         nullable=True,
-        comment="Base system prompt that defines the template's behavior and capabilities",
+        comment="Reasoning/thinking effort (none/minimal/low/medium/high/xhigh/max); NULL follows the model default.",
     )
-    prompt_append: Mapped[str | None] = mapped_column(
-        String,
+    system_prompt: Mapped[str | None] = mapped_column(
+        Text,
         nullable=True,
-        comment="Additional system prompt that has higher priority than the base prompt",
+        comment="System prompt that defines the template's purpose, personality, principles, and behavior",
     )
-    temperature: Mapped[float | None] = mapped_column(
-        nullable=True,
-        default=0.7,
-        comment="The randomness of the generated results (0.0~2.0)",
-    )
-    frequency_penalty: Mapped[float | None] = mapped_column(
-        nullable=True,
-        default=0.0,
-        comment="The frequency penalty (-2.0~2.0)",
-    )
-    presence_penalty: Mapped[float | None] = mapped_column(
-        nullable=True,
-        default=0.0,
-        comment="The presence penalty (-2.0~2.0)",
-    )
-    wallet_provider: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Provider of the template's wallet",
-    )
-    network_id: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        default="base-mainnet",
-        comment="Network identifier",
-    )
-    tools: Mapped[dict[str, Any] | None] = mapped_column(
+    tools: Mapped[list[str] | None] = mapped_column(
         JSONB(),
         nullable=True,
-        comment="Dict of tools and their corresponding configurations",
+        comment="List of enabled tool names",
     )
     search_internet: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True, comment="Enable LLM native internet search"
-    )
-    super_mode: Mapped[bool | None] = mapped_column(
-        Boolean, nullable=True, comment="Enable super mode with higher recursion limit"
-    )
-    enable_todo: Mapped[bool | None] = mapped_column(
-        Boolean,
-        nullable=True,
-        comment="Enable todo list middleware for task planning and tracking",
     )
     enable_activity: Mapped[bool | None] = mapped_column(
         Boolean,
@@ -135,11 +86,6 @@ class TemplateTable(Base):
         Boolean,
         nullable=True,
         comment="Enable post tools (create post, get post, recent posts)",
-    )
-    enable_long_term_memory: Mapped[bool | None] = mapped_column(
-        Boolean,
-        nullable=True,
-        comment="Enable long-term memory for the agent",
     )
     sub_agents: Mapped[list[str] | None] = mapped_column(
         JSONB(),
@@ -191,13 +137,6 @@ class Template(AgentCore):
         PydanticField(
             default=None,
             description="Team identifier of the template, used for access control",
-        ),
-    ]
-    description: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="Description of the template",
         ),
     ]
     created_at: Annotated[

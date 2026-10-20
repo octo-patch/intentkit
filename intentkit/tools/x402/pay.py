@@ -3,7 +3,6 @@
 This tool performs a paid HTTP request with a configurable maximum payment amount.
 """
 
-import asyncio
 import logging
 from typing import Any, cast, override
 from urllib.parse import urlparse
@@ -15,9 +14,11 @@ from langchain_core.tools import ArgsSchema, ToolException
 from pydantic import BaseModel, Field
 from web3.exceptions import TimeExhausted, Web3RPCError
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.x402.base import X402BaseTool, format_prefund_web3_error
 from intentkit.tools.x402.httpx_compat import PaymentError, X402HttpxCompatClient
 from intentkit.utils.error import IntentKitAPIError
+from intentkit.utils.ssrf import httpx_request_guard
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 class X402PayInput(BaseModel):
     """Arguments for a paid x402 HTTP request with max value limit."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     method: str = Field(description="HTTP method (GET or POST).")
     url: str = Field(description="Absolute URL (must include scheme and host).")
     max_value: int = Field(
@@ -56,6 +58,8 @@ class X402Pay(X402BaseTool):
     """Tool that performs a paid HTTP request with max payment limit via x402."""
 
     name: str = "x402_pay"
+    title: str = "Pay Request"
+    team_only: bool = True
     description: str = (
         "Send a paid x402 HTTP request with a max payment limit (max_value in base units, e.g. 1000000 = 1 USDC). "
         "Use x402_check_price first to preview costs."
@@ -65,6 +69,7 @@ class X402Pay(X402BaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         method: str,
         url: str,
         max_value: int,
@@ -113,13 +118,15 @@ class X402Pay(X402BaseTool):
         client: X402HttpxCompatClient | None = None
         try:
             await self._prefund_safe_wallet(
+                wallet_address=wallet_address,
                 method=method_upper,
                 request_kwargs=request_kwargs,
                 timeout=timeout,
                 max_value=max_value,
             )
-            account = await self.get_signer()
+            account = await self.get_signer(wallet_address)
             async with X402HttpxCompatClient(
+                event_hooks={"request": [httpx_request_guard]},
                 account=account,
                 max_value=max_value,
                 timeout=timeout,
@@ -138,6 +145,7 @@ class X402Pay(X402BaseTool):
                     tool_name=self.name,
                     method=method_upper,
                     url=url,
+                    wallet_address=wallet_address,
                     max_value=max_value,
                     pay_to_fallback=pay_to,
                 )
@@ -155,7 +163,7 @@ class X402Pay(X402BaseTool):
                     f"{exc} | last_payment_error={error_context}"
                 ) from exc
             raise ToolException(str(exc)) from exc
-        except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+        except (TimeoutError, httpx.TimeoutException) as exc:
             raise ToolException(
                 f"Request to {url} or related operation timed out after {timeout} seconds"
             ) from exc
@@ -165,7 +173,7 @@ class X402Pay(X402BaseTool):
             ) from exc
         except (httpx.RequestError, aiohttp.ClientError) as exc:
             raise ToolException(
-                f"Network error while connecting to {url} or RPC: {str(exc)}"
+                f"Network error while connecting to {url} or RPC: {exc!s}"
             ) from exc
         except (TimeExhausted, Web3RPCError) as exc:
             if isinstance(exc, Web3RPCError):
@@ -185,4 +193,4 @@ class X402Pay(X402BaseTool):
             raise
         except Exception as exc:
             logger.error("Unexpected error in x402_pay", exc_info=exc)
-            raise ToolException(f"Unexpected error occurred - {str(exc)}") from exc
+            raise ToolException(f"Unexpected error occurred - {exc!s}") from exc

@@ -208,7 +208,7 @@ export default function AgentTasksPage() {
             <div>
               <h1 className="text-xl font-bold">{displayName}</h1>
               <p className="text-sm text-muted-foreground line-clamp-1">
-                {agent?.purpose || "No description"}
+                {agent?.description || "No description"}
               </p>
             </div>
           </Link>
@@ -265,14 +265,6 @@ export default function AgentTasksPage() {
                         </CardDescription>
                       </div>
                       <div className="flex items-center gap-2">
-                        {task.has_memory && (
-                          <Badge
-                            variant="secondary"
-                            className="bg-blue-100 text-blue-800 hover:bg-blue-100"
-                          >
-                            Memory
-                          </Badge>
-                        )}
                         <Badge variant={task.enabled ? "default" : "secondary"}>
                           {task.enabled ? "Enabled" : "Disabled"}
                         </Badge>

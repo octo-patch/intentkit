@@ -6,42 +6,47 @@ This module handles:
 - Agent executor lifecycle management
 """
 
-# pyright: reportImportCycles=false
-
 import asyncio
 import importlib
 import logging
 import time
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from langchain_core.exceptions import ModelError
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import ToolException
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
+from openrouter.errors import ResponseValidationError
 from pydantic import ValidationError
 from pydantic.v1 import ValidationError as ValidationErrorV1
 
 from intentkit.abstracts.graph import AgentContext, AgentState
 from intentkit.config.config import config
 from intentkit.config.db import get_checkpointer
+from intentkit.core import caches
 from intentkit.core.agent import get_agent
-from intentkit.core.system_tools import SystemTool
 from intentkit.models.agent import Agent
 from intentkit.models.agent_data import AgentData
 from intentkit.models.llm import LLMProvider, create_llm_model
-from intentkit.models.llm_picker import pick_summarize_model, pick_tool_selector_model
+from intentkit.models.llm_picker import pick_summarize_model
 from intentkit.tools.base import IntentKitTool
-from intentkit.utils.error import IntentKitAPIError
+from intentkit.utils.error import (
+    TRANSIENT_TRANSPORT_ERRORS,
+    IntentKitAPIError,
+    http_status_candidates,
+    iter_exception_chain,
+)
 
 logger = logging.getLogger(__name__)
 
-# Global variable to cache all agent executors
-agents: dict[str, CompiledStateGraph[AgentState, AgentContext, Any, Any]] = {}
-
-# Global dictionaries to cache agent update times
-agents_updated: dict[str, datetime] = {}
+# Executor caches. The storage lives in core.caches so that lookup-only callers
+# (core.chat) can read it without importing this module; re-exported here under
+# the historical names because this is where they are written.
+agents = caches.agent_executors
+agents_updated = caches.agent_executors_updated
 
 # Track when each executor was last accessed, for TTL eviction
 _agents_accessed_at: dict[str, datetime] = {}
@@ -56,6 +61,56 @@ _EXECUTOR_CACHE_TTL = timedelta(hours=1)
 def _should_retry_tool_failure(exc: Exception) -> bool:
     """Retry transient tool failures, but not user-facing tool/validation errors."""
     return not isinstance(exc, (ToolException, ValidationError, ValidationErrorV1))
+
+
+def _should_retry_model_failure(exc: Exception) -> bool:
+    """Retry only transient model API failures.
+
+    Connection drops, timeouts, rate limits, and provider 5xx are worth
+    retrying; permanent errors (auth, invalid request, context overflow,
+    content policy) are not — they propagate to the engine's error handling.
+
+    The chain walk, status duck-typing, and transport-error classification
+    live in ``utils.error`` (shared with the engine's error handling).
+    OpenRouter needs the explicit
+    ``ResponseValidationError`` case below on top of the status filter: a
+    stream truncated mid-body surfaces as a would-be parse failure that
+    status alone cannot tell apart from a genuine, permanent schema mismatch.
+    """
+    for cause in iter_exception_chain(exc):
+        # langchain-core 1.6 gave integrations a shared exception vocabulary
+        # whose is_retryable flag the provider sets from the condition it
+        # actually saw, so it wins over the status filter below in both
+        # directions — langchain-google-genai's GoogleRateLimitError carries no
+        # status at all. Integrations still subclass their SDK's own error, so
+        # nothing below stops matching, and providers without the vocabulary
+        # (openrouter) fall through unchanged. Trusting the flag in the negative
+        # direction too — a classified failure ends the walk rather than getting
+        # a second opinion from the status filter — is deliberate, and is what
+        # ModelRetryMiddleware's own default_retry_on does.
+        if isinstance(cause, ModelError):
+            return cause.is_retryable
+        if isinstance(cause, TRANSIENT_TRANSPORT_ERRORS):
+            return True
+        # A 2xx whose body stopped mid-JSON — the upstream stream dropped.
+        # The SDK's own retries never see it: parsing happens after the
+        # HTTP layer already succeeded. Two sibling cases deliberately fall
+        # through to the status filter instead: a body that parsed but
+        # failed the schema (SDK/API drift, permanent), and any non-2xx,
+        # since the SDK unmarshals error bodies too and a truncated 402
+        # must stay as final as an intact one.
+        if (
+            isinstance(cause, ResponseValidationError)
+            and 200 <= cause.status_code < 300
+            and not isinstance(cause.__cause__, (ValidationError, ValidationErrorV1))
+        ):
+            return True
+        for status in http_status_candidates(cause):
+            if isinstance(status, str) and status.isdigit():
+                status = int(status)
+            if isinstance(status, int) and (status in (408, 429) or status >= 500):
+                return True
+    return False
 
 
 async def build_executor(
@@ -82,10 +137,7 @@ async def build_executor(
     """
     from langchain.agents import create_agent as create_langchain_agent
     from langchain.agents.middleware import (
-        ClearToolUsesEdit,
-        ContextEditingMiddleware,
         ModelRetryMiddleware,
-        TodoListMiddleware,
         ToolRetryMiddleware,
     )
     from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -94,22 +146,16 @@ async def build_executor(
         DynamicPromptMiddleware,
         EmptyContentSafetyMiddleware,
         MediaBlockSanitizerMiddleware,
-        SafeLLMToolSelectorMiddleware,
         StepTrackingMiddleware,
-        SummarizationMiddleware,
+        TodoMiddleware,
         ToolBindingMiddleware,
     )
+    from intentkit.core.summarization import SummarizationMiddleware
 
     # Create the LLM model instance
     llm_model = await create_llm_model(
         model_name=agent.model,
-        temperature=agent.temperature if agent.temperature is not None else 0.7,
-        frequency_penalty=(
-            agent.frequency_penalty if agent.frequency_penalty is not None else 0.0
-        ),
-        presence_penalty=(
-            agent.presence_penalty if agent.presence_penalty is not None else 0.0
-        ),
+        reasoning_effort=agent.reasoning_effort,
     )
 
     # ==== Store buffered conversation history in memory.
@@ -118,37 +164,31 @@ async def build_executor(
     except RuntimeError:
         checkpointer = InMemorySaver()
 
-    # ==== Load tools
+    # ==== Load tools into ONE list. Per-request gating happens in
+    # ToolBindingMiddleware: tools marked team_only (publishing, signing,
+    # spending) are dropped when a guest of a published agent is talking.
     tools: list[BaseTool | dict[str, Any]] = []
-    private_tools: list[BaseTool | dict[str, Any]] = []
 
     if agent.tools:
-        for k, v in agent.tools.items():
-            if not v.get("enabled", False):
-                continue
+        from intentkit.core.agent.tool_registry import group_tool_names_by_category
+
+        for category, names in group_tool_names_by_category(agent.tools).items():
             try:
-                tool_module = importlib.import_module(f"intentkit.tools.{k}")
+                tool_module = importlib.import_module(f"intentkit.tools.{category}")
                 if hasattr(tool_module, "get_tools"):
-                    # all
                     tool_tools = await tool_module.get_tools(
-                        v, False, agent_id=agent.id, agent=agent
+                        names, agent_id=agent.id, agent=agent
                     )
                     if tool_tools and len(tool_tools) > 0:
                         tools.extend(tool_tools)
-                    # private
-                    tool_private_tools = await tool_module.get_tools(
-                        v, True, agent_id=agent.id, agent=agent
-                    )
-                    if tool_private_tools and len(tool_private_tools) > 0:
-                        private_tools.extend(tool_private_tools)
                 else:
-                    logger.error("Tool %s does not have get_tools function", k)
+                    logger.error("Tool %s does not have get_tools function", category)
             except ImportError as e:
-                logger.error("Could not import tool module: %s (%s)", k, e)
+                logger.error("Could not import tool module: %s (%s)", category, e)
 
-    # add custom tools to private tools
+    # custom tools (lead engine): lead agents are never public
     if custom_tools and len(custom_tools) > 0:
-        private_tools.extend(custom_tools)
+        tools.extend(custom_tools)
 
     # add system tools — each conditionally based on agent config and provider
     from intentkit.core.system_tools import (
@@ -160,9 +200,12 @@ async def build_executor(
         read_webpage_cloudflare,
         recent_activities,
         recent_posts,
+        record_memory,
         store_image,
-        update_memory,
+        ui_ask_user,
+        ui_show_card,
         web_search,
+        write_todos,
     )
 
     model_provider = llm_model.info.provider
@@ -171,59 +214,65 @@ async def build_executor(
     # NOT use OpenRouter's openrouter:datetime server tool, so all agents share
     # the same time behaviour (formatted time plus a Unix timestamp).
     tools.append(current_time)
-    private_tools.append(current_time)
 
-    # call_agent: only when sub-agents are configured
+    # interactive UI tools (cards, choice buttons): every chat surface renders
+    # them, so they are bound for all agents rather than user-selected. They
+    # are interactive_only — ToolBindingMiddleware drops them per request for
+    # cron-triggered runs and sub-agent calls, where no live user is watching.
+    tools.append(ui_show_card)
+    tools.append(ui_ask_user)
+
+    # call_agent: only when sub-agents are configured. Open to guests —
+    # sub-agent runs recompute their own access context per message.
     if agent.sub_agents:
-        private_tools.append(call_agent)
+        tools.append(call_agent)
 
-    # activity tools: enabled by default
+    # write_todos: task planning for complex multi-step requests, always on
+    # for live conversations. Like the UI tools it is interactive_only —
+    # ToolBindingMiddleware drops it for cron-triggered runs (single-shot,
+    # facts carry via task memory) and sub-agent runs (the plan belongs to
+    # the calling agent). TodoMiddleware carries the matching prompt
+    # guidance and lifecycle, gated the same way.
+    tools.append(write_todos)
+
+    # activity tools: enabled by default (create_activity is team_only)
     if agent.is_activity_enabled:
-        private_tools.append(create_activity)
-        private_tools.append(recent_activities)
+        tools.append(create_activity)
+        tools.append(recent_activities)
 
-    # post tools: enabled by default
+    # post tools: enabled by default (create_post is team_only)
     if agent.is_post_enabled:
-        private_tools.append(create_post)
-        private_tools.append(get_post)
-        private_tools.append(recent_posts)
+        tools.append(create_post)
+        tools.append(get_post)
+        tools.append(recent_posts)
 
-    # long-term memory
-    if agent.enable_long_term_memory:
-        private_tools.append(update_memory)
+    # scoped long-term memory is always on: guests record into their own
+    # rows (their user memory and their team's memory of this agent)
+    tools.append(record_memory)
 
     # search-related tools based on provider
-    extra_llm_params: dict[str, Any] = {}
     if agent.search_internet:
         if model_provider == LLMProvider.OPENAI:
             search_tools: list[dict[str, Any]] = [{"type": "web_search"}]
             tools.extend(search_tools)
-            private_tools.extend(search_tools)
         elif model_provider == LLMProvider.XAI:
             search_tools = [{"type": "web_search"}, {"type": "x_search"}]
             tools.extend(search_tools)
-            private_tools.extend(search_tools)
-        elif model_provider == LLMProvider.OPENROUTER:
-            # Pair web search with OpenRouter's web_fetch server tool so the
-            # agent can both discover and read pages natively, instead of our
-            # own webpage reader tool.
-            search_tools = [
-                {"type": "openrouter:web_search"},
-                {"type": "openrouter:web_fetch"},
-            ]
-            tools.extend(search_tools)
-            private_tools.extend(search_tools)
         elif model_provider == LLMProvider.GOOGLE:
             search_tools = [{"google_search": {}}, {"url_context": {}}]
             tools.extend(search_tools)
-            private_tools.extend(search_tools)
         else:
-            # Providers without a native search tool (deepseek, minimax,
-            # mimo_plan, ollama, *_compatible): use our unified web_search tool
-            # plus the Cloudflare webpage reader. Each self-checks its own
+            # Everyone else uses our own client-side web tools: deepseek,
+            # minimax, mimo_plan, ollama, *_compatible, and all OpenRouter
+            # models. OpenRouter is deliberately here rather than on its
+            # server-side web_search/web_fetch tools: those corrupt tool
+            # calling on continuation turns — every routed model leaks its
+            # native tool-call tokens as plain text (DeepSeek DSML, MiMo
+            # `<function=>`, GPT `to=functions.`) instead of a structured
+            # call, so multi-step tasks never complete. Our client-side
+            # web_search + reader avoid that path. Each self-checks its own
             # config and raises a clear error if unconfigured.
             tools.extend([web_search, read_webpage_cloudflare])
-            private_tools.extend([web_search, read_webpage_cloudflare])
 
         # store_image: paired with the search/reader tools above so the
         # agent can persist URLs it discovered online. Registered for every
@@ -233,13 +282,9 @@ async def build_executor(
         # that will always fail.
         if config.aws_s3_bucket and config.aws_s3_cdn_url:
             tools.append(store_image)
-            private_tools.append(store_image)
 
     # filter out unavailable tools
     tools = [t for t in tools if not isinstance(t, IntentKitTool) or t.available()]
-    private_tools = [
-        t for t in private_tools if not isinstance(t, IntentKitTool) or t.available()
-    ]
 
     # filter the duplicate tools
     def _tool_key(tool: BaseTool | dict[str, Any]) -> str:
@@ -248,9 +293,8 @@ async def build_executor(
         return str(tool.get("name") or tool.get("type") or tool)
 
     tools = list({_tool_key(t): t for t in tools}.values())
-    private_tools = list({_tool_key(t): t for t in private_tools}.values())
 
-    for tool in private_tools:
+    for tool in tools:
         logger.info(
             "[%s] loaded tool: %s",
             agent.id,
@@ -260,78 +304,47 @@ async def build_executor(
     base_model = await llm_model.create_instance()
 
     middleware: list[Any] = [
-        ToolBindingMiddleware(llm_model, tools, private_tools, extra_llm_params),
+        ToolBindingMiddleware(llm_model, tools),
         DynamicPromptMiddleware(agent, agent_data),
         EmptyContentSafetyMiddleware(),
         MediaBlockSanitizerMiddleware(),
         StepTrackingMiddleware(),
         ToolRetryMiddleware(retry_on=_should_retry_tool_failure),
-        ModelRetryMiddleware(),
+        # The SDK clients already retry pre-stream failures (max_retries=3 in
+        # llm.py); this layer exists for what they won't retry — errors after
+        # streaming began. retry_on keeps it to transient failures, and
+        # on_failure="error" propagates terminal ones to the engine's error
+        # handling instead of recording them as a fake assistant message.
+        ModelRetryMiddleware(
+            max_retries=2,
+            retry_on=_should_retry_model_failure,
+            on_failure="error",
+        ),
+        TodoMiddleware(),
     ]
 
     # Anthropic prompt caching: 5m ephemeral cache slashes input-token cost on
     # long system prompts + repeated history. No-op for non-Anthropic providers.
+    # Must come after TodoMiddleware in this list: the cache breakpoint tags
+    # the last system-message block, so the todo guidance/snapshot block has
+    # to be appended before the tag is placed to be covered by the cache.
     if model_provider == LLMProvider.ANTHROPIC_COMPATIBLE:
         middleware.append(AnthropicPromptCachingMiddleware())
 
-    if agent.enable_todo:
-        middleware.append(TodoListMiddleware())
-
-    # Auto-enable LLM tool selector when there are many selectable tools.
-    # Only BaseTool instances count toward the threshold since the upstream
-    # selector ignores dict-typed provider server tools (e.g. {"type":
-    # "web_search"}) — it never filters them, so they shouldn't push a
-    # borderline agent into the selector path.
-    #
-    # SystemTool instances are pinned via `always_include` so core
-    # capabilities (time, memory, posts, activities, sub-agent calls) stay
-    # reachable even when the selector picks a small subset.
-    selectable_tool_count = sum(1 for t in private_tools if isinstance(t, BaseTool))
-    if selectable_tool_count > 30:
-        selector_model_name = pick_tool_selector_model()
-        if selector_model_name:
-            selector_llm = await create_llm_model(model_name=selector_model_name)
-            selector_model = await selector_llm.create_instance()
-            always_include = [
-                t.name for t in private_tools if isinstance(t, SystemTool)
-            ]
-            middleware.append(
-                SafeLLMToolSelectorMiddleware(
-                    model=selector_model,
-                    always_include=always_include,
-                )
-            )
-
-    # Context editing clears old tool results at 40% context to free space.
-    # Note: ContextEditingMiddleware uses wrap_model_call while SummarizationMiddleware
-    # uses before_model, so summarization always runs first regardless of list position.
-    # The lower threshold (40%) ensures context editing handles moderate growth,
-    # while summarization (60-80%) handles extreme cases.
-    context_editing_trigger = int(llm_model.info.context_length * 0.4)
-    middleware.append(
-        ContextEditingMiddleware(
-            edits=[
-                ClearToolUsesEdit(
-                    trigger=context_editing_trigger,
-                    exclude_tools=["ui_show_card", "ui_ask_user"],
-                )
-            ]
-        )
-    )
-
-    summarize_model_name = pick_summarize_model()
-    summarize_llm = await create_llm_model(model_name=summarize_model_name)
-    summarize_model = await summarize_llm.create_instance()
+    # History growth is handled solely by SummarizationMiddleware (per-model
+    # thresholds and idle-time tiers: LLMModelInfo.compress_thresholds and
+    # intentkit/core/summarization.py). Upstream ContextEditingMiddleware was
+    # removed: its approximate token counting (4 chars/token, tuned for
+    # English) put the nominal 40%-of-context trigger above the compression
+    # thresholds for CJK conversations, and its per-request ephemeral edits
+    # deep-copied the whole history every model call while the sliding
+    # keep-window broke the Anthropic prompt cache each turn.
+    summarize_llm = await create_llm_model(model_name=pick_summarize_model())
     middleware.append(
         SummarizationMiddleware(
-            model=summarize_model,
-            trigger=[
-                ("tokens", int(llm_model.info.context_length * 0.8)),
-            ]
-            if agent.super_mode
-            else [
-                ("tokens", int(llm_model.info.context_length * 0.6)),
-            ],
+            model_info=llm_model.info,
+            summary_model=await summarize_llm.create_instance(),
+            summary_model_info=summarize_llm.info,
         )
     )
 
@@ -340,7 +353,7 @@ async def build_executor(
 
     executor = create_langchain_agent(
         model=base_model,
-        tools=private_tools,
+        tools=tools,
         middleware=middleware,
         state_schema=AgentState,
         context_schema=AgentContext,
@@ -362,7 +375,7 @@ async def _get_build_lock(agent_id: str) -> asyncio.Lock:
 
 def _cleanup_cache() -> None:
     """Evict expired executor cache entries based on last access time."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expired_before = now - _EXECUTOR_CACHE_TTL
     for aid in list(_agents_accessed_at):
         if _agents_accessed_at[aid] < expired_before:
@@ -390,9 +403,8 @@ async def build_and_cache_executor(
     """
     executor = await build_executor(agent, agent_data)
     agents[aid] = executor
-    agent_ts = agent.deployed_at if agent.deployed_at else agent.updated_at
-    agents_updated[aid] = max(agent_ts, agent_data.updated_at)
-    _agents_accessed_at[aid] = datetime.now(timezone.utc)
+    agents_updated[aid] = max(agent.updated_at, agent_data.updated_at)
+    _agents_accessed_at[aid] = datetime.now(UTC)
 
 
 async def agent_executor(
@@ -409,14 +421,14 @@ async def agent_executor(
             status_code=404, key="AgentNotFound", message="Agent not found"
         )
     agent_data = await AgentData.get(agent_id)
-    agent_ts = agent.deployed_at if agent.deployed_at else agent.updated_at
-    updated_at = max(agent_ts, agent_data.updated_at)
+    updated_at = max(agent.updated_at, agent_data.updated_at)
     # Check if agent needs reinitialization due to updates
     needs_reinit = False
-    if agent_id in agents:
-        if agent_id not in agents_updated or updated_at != agents_updated[agent_id]:
-            needs_reinit = True
-            logger.info("Reinitializing agent %s due to updates", agent_id)
+    if agent_id in agents and (
+        agent_id not in agents_updated or updated_at != agents_updated[agent_id]
+    ):
+        needs_reinit = True
+        logger.info("Reinitializing agent %s due to updates", agent_id)
 
     # cold start or needs reinitialization
     cold_start_cost = 0.0
@@ -432,5 +444,5 @@ async def agent_executor(
                 await build_and_cache_executor(agent_id, agent, agent_data)
                 cold_start_cost = time.perf_counter() - start
 
-    _agents_accessed_at[agent_id] = datetime.now(timezone.utc)
+    _agents_accessed_at[agent_id] = datetime.now(UTC)
     return agents[agent_id], cold_start_cost

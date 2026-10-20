@@ -10,6 +10,7 @@ from web3 import Web3
 from intentkit.tools.aave_v3.base import AaveV3BaseTool
 from intentkit.tools.aave_v3.constants import POOL_ABI, POOL_ADDRESSES
 from intentkit.tools.aave_v3.utils import get_token_symbol
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 NAME = "aave_v3_set_collateral"
 
@@ -17,6 +18,7 @@ NAME = "aave_v3_set_collateral"
 class SetCollateralInput(BaseModel):
     """Input for Aave V3 set collateral."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_address: str = Field(description="ERC20 token contract address")
     use_as_collateral: bool = Field(
         description="True to enable as collateral, False to disable"
@@ -27,6 +29,8 @@ class AaveV3SetCollateral(AaveV3BaseTool):
     """Enable or disable an asset as collateral on Aave V3."""
 
     name: str = NAME
+    title: str = "Set Collateral"
+    team_only: bool = True
     description: str = (
         "Enable or disable a supplied asset as collateral on Aave V3. "
         "Disabling collateral may affect your health factor and borrowing capacity. "
@@ -37,14 +41,16 @@ class AaveV3SetCollateral(AaveV3BaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_address: str,
         use_as_collateral: bool,
         **kwargs: Any,
     ) -> str:
         try:
-            chain_id = self._resolve_chain_id()
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
+            wallet = await self.get_unified_wallet(wallet_address)
+            network_id = wallet.network_id
+            chain_id = self._resolve_chain_id(network_id)
+            w3 = wallet.w3
 
             pool_address = POOL_ADDRESSES[chain_id]
             checksum_token = Web3.to_checksum_address(token_address)
@@ -74,7 +80,7 @@ class AaveV3SetCollateral(AaveV3BaseTool):
             return (
                 f"**Aave V3 Set Collateral**\n"
                 f"{action} {symbol} as collateral\n"
-                f"Network: {self.get_agent_network_id()}\n"
+                f"Network: {network_id}\n"
                 f"Tx: {tx_hash}"
             )
 

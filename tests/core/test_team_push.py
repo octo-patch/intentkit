@@ -5,8 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from intentkit.config.config import config
 from intentkit.core.team.push import (
     WechatPushWindowClosedError,
+    _send_lark,
+    _send_slack,
     _send_wechat,
     push_to_team,
 )
@@ -63,6 +66,96 @@ class TestSendWechat:
             ctx = _mock_httpx_client(payload)
             with patch(f"{MODULE_PUSH}.httpx.AsyncClient", return_value=ctx):
                 await _send_wechat(**_send_wechat_args())
+
+
+def _resp(payload):
+    r = MagicMock()
+    r.raise_for_status = MagicMock()
+    r.json = MagicMock(return_value=payload)
+    return r
+
+
+class TestSlackPush:
+    @staticmethod
+    def _client(response_json):
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=_resp(response_json))
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        return client, ctx
+
+    @pytest.mark.asyncio
+    async def test_send_slack_success(self):
+        client, ctx = self._client({"ok": True})
+        with patch(f"{MODULE_PUSH}.httpx.AsyncClient", return_value=ctx):
+            await _send_slack("xoxb-tok", "C0ABC", "hello")
+        assert client.post.await_count == 1
+        # Bot token is sent as a bearer header; chat_id + text as JSON (no token
+        # exchange, unlike Lark).
+        _, kwargs = client.post.call_args
+        assert kwargs["headers"]["Authorization"] == "Bearer xoxb-tok"
+        assert kwargs["json"] == {"channel": "C0ABC", "text": "hello"}
+
+    @pytest.mark.asyncio
+    async def test_send_slack_error_raises(self):
+        _, ctx = self._client({"ok": False, "error": "channel_not_found"})
+        with patch(f"{MODULE_PUSH}.httpx.AsyncClient", return_value=ctx):
+            with pytest.raises(RuntimeError, match="Slack API error"):
+                await _send_slack("xoxb-tok", "C0ABC", "hello")
+
+
+class TestLarkPush:
+    """Lark push is routed to the Go webhook service (it owns the token chain)."""
+
+    @staticmethod
+    def _client(status_code):
+        resp = MagicMock()
+        resp.status_code = status_code
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=resp)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=client)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        return client, ctx
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_unconfigured(self):
+        # No service URL / secret → push degrades gracefully (no raise).
+        with (
+            patch.object(config, "lark_service_url", None),
+            patch.object(config, "lark_internal_secret", None),
+        ):
+            assert await _send_lark("tk", "oc_1", "hello") is False
+
+    @pytest.mark.asyncio
+    async def test_posts_to_go_service(self):
+        client, ctx = self._client(200)
+        with (
+            patch.object(config, "lark_service_url", "http://lark:8084"),
+            patch.object(config, "lark_internal_secret", "shh"),
+            patch(f"{MODULE_PUSH}.httpx.AsyncClient", return_value=ctx),
+        ):
+            assert await _send_lark("tk", "oc_1", "hello") is True
+        args, kwargs = client.post.call_args
+        assert args[0] == "http://lark:8084/lark/push"
+        assert kwargs["json"] == {
+            "tenant_key": "tk",
+            "chat_id": "oc_1",
+            "text": "hello",
+        }
+        assert kwargs["headers"]["X-Internal-Secret"] == "shh"
+
+    @pytest.mark.asyncio
+    async def test_non_200_raises(self):
+        _, ctx = self._client(502)
+        with (
+            patch.object(config, "lark_service_url", "http://lark:8084"),
+            patch.object(config, "lark_internal_secret", "shh"),
+            patch(f"{MODULE_PUSH}.httpx.AsyncClient", return_value=ctx),
+        ):
+            with pytest.raises(RuntimeError, match="Lark push failed"):
+                await _send_lark("tk", "oc_1", "hello")
 
 
 class TestPushToTeamWindowClosed:

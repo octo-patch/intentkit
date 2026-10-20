@@ -83,6 +83,7 @@ class FirecrawlCrawl(FirecrawlBaseTool):
     """
 
     name: str = "firecrawl_crawl"
+    title: str = "Firecrawl Crawl"
     description: str = (
         "Crawl a website to extract content from multiple pages. "
         "Optionally indexes content for querying via firecrawl_query_indexed_content."
@@ -126,16 +127,7 @@ class FirecrawlCrawl(FirecrawlBaseTool):
             str: Formatted crawled content from all pages.
         """
         context = self.get_context()
-        tool_config = context.agent.tool_config(self.category)
         logger.debug("firecrawl_crawl: Running crawl with context %s", context)
-
-        if tool_config.get("rate_limit_number") and tool_config.get(
-            "rate_limit_minutes"
-        ):
-            await self.user_rate_limit_by_category(
-                tool_config["rate_limit_number"],
-                tool_config["rate_limit_minutes"] * 60,
-            )
 
         # Get the API key from the agent's configuration
         api_key = self.get_api_key()
@@ -357,7 +349,7 @@ class FirecrawlCrawl(FirecrawlBaseTool):
                                     f"firecrawl_crawl: Error indexing content: {index_error}"
                                 )
                                 formatted_result += "\n## Content Indexing\n"
-                                formatted_result += f"Warning: Failed to index content for later querying: {str(index_error)}\n"
+                                formatted_result += f"Warning: Failed to index content for later querying: {index_error!s}\n"
 
                         return formatted_result.strip()
 
@@ -398,5 +390,5 @@ class FirecrawlCrawl(FirecrawlBaseTool):
                 f"Timeout error: The request to crawl {url} took too long to complete."
             )
         except Exception as e:
-            logger.error("firecrawl_crawl: Error crawling URL: %s", e, exc_info=True)
+            logger.exception("firecrawl_crawl: Error crawling URL")
             raise ToolException(f"An error occurred while crawling the URL: {e!s}")

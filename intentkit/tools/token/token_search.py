@@ -38,6 +38,7 @@ class TokenSearch(TokenBaseTool):
     """
 
     name: str = "token_search"
+    title: str = "Token Search (Premium)"
     description: str = (
         "Search tokens by address, name, or symbol. Requires Moralis Business plan."
     )
@@ -108,7 +109,7 @@ class TokenSearch(TokenBaseTool):
         except Exception as e:
             logger.error("Error searching for tokens: %s", e)
             return {
-                "error": f"An error occurred while searching for tokens: {str(e)}. Please try again later.",
+                "error": f"An error occurred while searching for tokens: {e!s}. Please try again later.",
                 "notice": (
                     "This API requires a Moralis Business plan or Enterprise plan. "
                     "Please ensure your API key is associated with the appropriate plan."

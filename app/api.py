@@ -6,6 +6,7 @@ including routers, middleware, and startup/shutdown events.
 The API server provides endpoints for agent execution and management.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -38,13 +39,14 @@ from app.local import (
     content_router,
     health_router,
     lead_router,
+    link_router,
+    memory_router,
     metadata_router,
     public_router,
     schema_router,
+    wallet_router,
     wechat_router,
 )
-from app.services.twitter.oauth2 import twitter_oauth2_router
-from app.services.twitter.oauth2_callback import twitter_callback_router
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +88,9 @@ async def lifespan(app: FastAPI):
     )
 
     # Initialize S3 bucket (Create & Set Public Policy if needed)
-    # This is synchronous but fast enough for startup
-    ensure_bucket_exists_and_public()
+    # Synchronous and may sleep while waiting for the object store to come
+    # up, so run it off the event loop.
+    await asyncio.to_thread(ensure_bucket_exists_and_public)
 
     await ensure_system_user_and_team()
 
@@ -99,6 +102,12 @@ async def lifespan(app: FastAPI):
 
     await ensure_public_agent_prerequisites()
     await sync_public_agents()
+
+    # Warm the tool catalog off the event loop: the first build imports every
+    # toolset module (seconds) and must not stall the first request.
+    from intentkit.core.agent.tool_registry import warm_tool_registry
+
+    await asyncio.to_thread(warm_tool_registry)
 
     logger.info("API server start")
     yield
@@ -145,13 +154,14 @@ _ = app.include_router(agent_router)
 _ = app.include_router(autonomous_router)
 _ = app.include_router(chat_router)
 _ = app.include_router(lead_router)
+_ = app.include_router(link_router)
+_ = app.include_router(memory_router)
 _ = app.include_router(content_router)
 _ = app.include_router(metadata_router)
 _ = app.include_router(schema_router)
+_ = app.include_router(wallet_router)
 _ = app.include_router(wechat_router)
 _ = app.include_router(core_router)
-_ = app.include_router(twitter_callback_router, include_in_schema=False)
-_ = app.include_router(twitter_oauth2_router)
 _ = app.include_router(public_router)
 _ = app.include_router(health_router)
 

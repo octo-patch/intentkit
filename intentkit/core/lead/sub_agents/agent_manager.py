@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from langchain_core.tools import BaseTool
 
+from intentkit.core.lead.constants import compose_system_prompt
 from intentkit.core.lead.tools.create_team_agent import create_team_agent_tool
 from intentkit.core.lead.tools.get_team_agent import get_team_agent_tool
 from intentkit.core.lead.tools.get_team_info import get_team_info_tool
@@ -87,49 +88,35 @@ def _model_selection_section() -> str:
 
 def build_agent_manager(team_id: str) -> Agent:
     """Build an in-memory Agent Manager sub-agent."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
-    prompt = (
+    rules = (
         "### Workflow\n\n"
         "- Call `lead_list_team_agents` first when asked about existing agents.\n"
         "- Call `lead_get_team_agent` before updating to see current config.\n\n"
         "### Agent Creation\n\n"
         "Guide user through:\n"
-        "1. Name, slug, and purpose\n"
-        "2. Model — pick by purpose using the Model Selection section below.\n"
+        "1. Name, slug, a short description, and the system prompt\n"
+        "2. Model — pick by the agent's role using the Model Selection section below.\n"
         "3. Tools — ALWAYS call `lead_list_available_tools` first to see all "
         "available categories and individual tools. Pick only the tools the "
-        "agent needs based on its purpose. Keep under 20.\n"
+        "agent needs based on its role. Keep under 20.\n"
         "4. Additional settings as needed\n\n"
         + _model_selection_section()
         + "### Tool Configuration (IMPORTANT)\n\n"
         "You MUST call `lead_list_available_tools` before configuring tools. "
         "Only use tool names from that list.\n\n"
-        "Format:\n"
+        "`tools` is a flat list of tool names:\n"
         "```json\n"
-        "{\n"
-        '  "category_name": {\n'
-        '    "enabled": true,\n'
-        '    "states": {\n'
-        '      "tool_name_1": "public",\n'
-        '      "tool_name_2": "public"\n'
-        "    }\n"
-        "  }\n"
-        "}\n"
+        '["tool_name_1", "tool_name_2"]\n'
         "```\n\n"
-        "Example — enable two image tools and one twitter tool:\n"
+        "Example — enable two image tools and one firecrawl tool:\n"
         "```json\n"
-        "{\n"
-        '  "image": {"enabled": true, "states": {"image_gpt": "public", "image_gemini_flash": "public"}},\n'
-        '  "twitter": {"enabled": true, "states": {"post_tweet": "public"}}\n'
-        "}\n"
+        '["image_gpt", "image_gemini_flash", "firecrawl_scrape"]\n'
         "```\n\n"
         "Rules:\n"
-        "- `enabled`: category-level toggle (must be `true` to activate)\n"
-        "- `states`: map of individual tool names to their access level\n"
-        "- Access levels: `public` (all users), `private` (owner only)\n"
         "- Only include tools you want to enable — omitted tools stay disabled\n"
-        "- The backend will reject unknown categories or tool names with an error\n\n"
+        "- The backend will reject unknown tool names with an error\n\n"
         "### Internet Search\n\n"
         "To give an agent web search ability, set the agent field "
         "`search_internet` to `true`. That switch enables the LLM provider's "
@@ -144,20 +131,33 @@ def build_agent_manager(team_id: str) -> Agent:
         "the lead to route the request to `task-manager`.\n\n"
         "### Agent Fields Reference\n\n"
         "- `name`: Display name (max 50 chars)\n"
-        "- `purpose`, `personality`, `principles`: Agent character\n"
+        "- `description`: Short public summary shown in listings and used to "
+        "describe the agent when wired as a sub-agent\n"
         "- `model`: LLM model ID\n"
-        "- `prompt`: Base system prompt\n"
-        "- `prompt_append`: Additional system prompt (higher priority)\n"
-        "- `temperature`: Randomness (0.0~2.0, lower for rigorous tasks)\n"
+        "- `reasoning_effort`: Thinking effort (none/minimal/low/medium/high/"
+        "xhigh/max). Leave unset for the model default; values are adapted to "
+        "what the model supports\n"
+        "- `system_prompt`: System prompt defining the agent's purpose, "
+        "personality, principles, and behavior. Markdown; organize sections "
+        "with level 2+ headings (##, ###). Level 1 headings (#) are not "
+        "allowed.\n"
         "- `tools`: Tool configurations dict (see format above)\n"
         "- `slug`: URL-friendly slug (immutable once set)\n"
         "- `sub_agents`: List of sub-agent IDs or slugs\n"
         "- `sub_agent_prompt`: Instructions for how to use sub-agents\n"
-        "- `enable_todo`, `enable_activity`, `enable_post`: Feature toggles\n"
-        "- `enable_long_term_memory`: Enable long-term memory\n"
-        "- `super_mode`: Higher recursion limit\n"
+        "- `enable_activity`, `enable_post`: Feature toggles\n"
         "- `search_internet`: LLM native internet search\n"
         "- `visibility`: PRIVATE(0), TEAM(10), PUBLIC(20)\n"
+    )
+
+    system_prompt = compose_system_prompt(
+        purpose="Create, configure, and update team agents.",
+        principles=(
+            "1. Speak to users in their language, but use English in agent and task configuration.\n"
+            "2. All changes take effect immediately.\n"
+            "3. Update is override — provide complete field values, not just changes."
+        ),
+        rules=rules,
     )
 
     agent_data = {
@@ -165,31 +165,15 @@ def build_agent_manager(team_id: str) -> Agent:
         "owner": "system",
         "team_id": team_id,
         "name": "Agent Manager",
-        "purpose": ("Create, configure, and update team agents."),
-        "principles": (
-            "1. Speak to users in their language, but use English in agent and task configuration.\n"
-            "2. All changes are directly deployed (no draft flow).\n"
-            "3. Update is override — provide complete field values, not just changes."
-        ),
         "model": pick_default_model(),
-        "prompt": prompt,
-        "temperature": 0.2,
+        "system_prompt": system_prompt,
         "search_internet": False,
-        "super_mode": False,
-        "enable_todo": False,
         "enable_activity": False,
         "enable_post": False,
-        "enable_long_term_memory": False,
         "sub_agents": None,
-        "tools": {
-            "ui": {
-                "enabled": True,
-                "states": {
-                    "ui_show_card": "private",
-                    "ui_ask_user": "private",
-                },
-            },
-        },
+        # ui_show_card / ui_ask_user are interactive_only system tools now;
+        # ToolBindingMiddleware drops them per request for sub-agent runs
+        "tools": None,
         "created_at": now,
         "updated_at": now,
     }

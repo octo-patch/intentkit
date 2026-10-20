@@ -19,9 +19,6 @@ class AgentExample(BaseModel):
         PydanticField(
             description="Name of the example",
             max_length=50,
-            json_schema_extra={
-                "x-placeholder": "Add a name for the example",
-            },
         ),
     ]
     description: Annotated[
@@ -29,9 +26,6 @@ class AgentExample(BaseModel):
         PydanticField(
             description="Description of the example",
             max_length=200,
-            json_schema_extra={
-                "x-placeholder": "Add a short description for the example",
-            },
         ),
     ]
     prompt: Annotated[
@@ -39,9 +33,6 @@ class AgentExample(BaseModel):
         PydanticField(
             description="Example prompt",
             max_length=2000,
-            json_schema_extra={
-                "x-placeholder": "The prompt will be sent to the agent",
-            },
         ),
     ]
 
@@ -61,29 +52,14 @@ class AgentPublicInfo(BaseModel):
             description="Price($) of the x402 request",
             ge=0.01,
             le=1.0,
-            json_schema_extra={
-                "x-placeholder": "USDC price per request",
-                "x-step": 0.01,
-            },
         ),
     ] = 0.01
-    description: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="Description of the agent, for public view, not contained in prompt",
-            json_schema_extra={
-                "x-placeholder": "Introduce your agent",
-            },
-        ),
-    ] = None
     external_website: Annotated[
         str | None,
         PydanticField(
             default=None,
             description="Link of external website of the agent, if you have one",
             json_schema_extra={
-                "x-placeholder": "Enter agent external website url",
                 "format": "uri",
             },
         ),
@@ -95,9 +71,6 @@ class AgentPublicInfo(BaseModel):
             description="Ticker symbol of the agent",
             max_length=10,
             min_length=1,
-            json_schema_extra={
-                "x-placeholder": "If one day, your agent has it's own token, what will it be?",
-            },
         ),
     ] = None
     token_address: Annotated[
@@ -106,9 +79,6 @@ class AgentPublicInfo(BaseModel):
             default=None,
             description="Token address of the agent",
             max_length=66,
-            json_schema_extra={
-                "x-placeholder": "The contract address of the agent token",
-            },
         ),
     ] = None
     token_pool: Annotated[
@@ -117,9 +87,6 @@ class AgentPublicInfo(BaseModel):
             default=None,
             description="Pool of the agent token",
             max_length=66,
-            json_schema_extra={
-                "x-placeholder": "The contract address of the agent token pool",
-            },
         ),
     ] = None
     fee_percentage: Annotated[
@@ -128,9 +95,6 @@ class AgentPublicInfo(BaseModel):
             default=None,
             description="Fee percentage of the agent",
             ge=Decimal("0.0"),
-            json_schema_extra={
-                "x-placeholder": "Agent will charge service fee according to this ratio.",
-            },
         ),
     ] = None
     example_intro: Annotated[
@@ -139,9 +103,6 @@ class AgentPublicInfo(BaseModel):
             default=None,
             description="Introduction of the example",
             max_length=2000,
-            json_schema_extra={
-                "x-placeholder": "Add a short introduction in new chat",
-            },
         ),
     ] = None
     examples: Annotated[
@@ -150,9 +111,6 @@ class AgentPublicInfo(BaseModel):
             default=None,
             description="List of example prompts for the agent",
             max_length=6,
-            json_schema_extra={
-                "x-inline": True,
-            },
         ),
     ] = None
     tags: Annotated[
@@ -175,8 +133,9 @@ class AgentPublicInfo(BaseModel):
 class AgentPublishInput(BaseModel):
     """Request body for publishing an agent to public.
 
-    Carries only the four user-collected public-info fields. Anything else
-    on ``AgentPublicInfo`` (ticker, token_*, x402_price, fee_percentage,
+    Carries only the four user-collected fields: ``description`` (a core
+    agent field) plus three public-info fields. Anything else on
+    ``AgentPublicInfo`` (ticker, token_*, x402_price, fee_percentage,
     public_extra, external_website) is intentionally not accepted here —
     callers should leave existing values on the agent untouched and let
     the platform fill in fee_percentage server-side.
@@ -211,15 +170,16 @@ class AgentPublishInput(BaseModel):
         description="Up to 3 category tags from the predefined list",
     )
 
-    def to_public_info(self) -> "AgentPublicInfo":
+    def to_public_info(self) -> AgentPublicInfo:
         """Build the canonical AgentPublicInfo for the publish flow.
 
         Forces ``fee_percentage = 1`` and leaves all other public-info fields
         unset so existing values on the agent are preserved by the
-        partial-update merge in ``apply_public_info_update``.
+        partial-update merge in ``apply_public_info_update``. ``description``
+        is a core agent field, not public info — the publish flow writes it
+        separately.
         """
         return AgentPublicInfo(
-            description=self.description,
             example_intro=self.example_intro,
             examples=self.examples,
             tags=[t.value for t in self.tags] if self.tags is not None else None,

@@ -14,34 +14,17 @@ export function AgentInfoBar({ agent }: AgentInfoBarProps) {
           {agent.model}
         </span>
         {agent.tools &&
-          Object.entries(agent.tools)
-            .filter(([, config]) => (config as { enabled: boolean }).enabled)
-            .map(([category]) => (
-              <span
-                key={category}
-                className="inline-flex items-center rounded-md bg-primary/10 text-primary px-2 py-0.5 text-xs font-medium ring-1 ring-inset ring-primary/20"
-              >
-                {category}
-              </span>
-            ))}
+          agent.tools.map((tool) => (
+            <span
+              key={tool}
+              className="inline-flex items-center rounded-md bg-primary/10 text-primary px-2 py-0.5 text-xs font-medium ring-1 ring-inset ring-primary/20"
+            >
+              {tool}
+            </span>
+          ))}
         {agent.search_internet && (
           <span className="inline-flex items-center rounded-md bg-blue-500/10 text-blue-700 dark:text-blue-400 px-2 py-0.5 text-xs font-medium ring-1 ring-inset ring-blue-500/20">
             search
-          </span>
-        )}
-        {agent.super_mode && (
-          <span className="inline-flex items-center rounded-md bg-purple-500/10 text-purple-700 dark:text-purple-400 px-2 py-0.5 text-xs font-medium ring-1 ring-inset ring-purple-500/20">
-            super
-          </span>
-        )}
-        {agent.enable_todo && (
-          <span className="inline-flex items-center rounded-md bg-green-500/10 text-green-700 dark:text-green-400 px-2 py-0.5 text-xs font-medium ring-1 ring-inset ring-green-500/20">
-            todo
-          </span>
-        )}
-        {agent.enable_long_term_memory && (
-          <span className="inline-flex items-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-400 px-2 py-0.5 text-xs font-medium ring-1 ring-inset ring-amber-500/20">
-            memory
           </span>
         )}
       </div>

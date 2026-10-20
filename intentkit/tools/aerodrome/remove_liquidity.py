@@ -12,13 +12,16 @@ from intentkit.models.tool import AgentToolData
 from intentkit.tools.aerodrome.base import AerodromeBaseTool
 from intentkit.tools.aerodrome.constants import (
     CL_GAUGE_ABI,
-    NETWORK_TO_CHAIN_ID,
     POSITION_MANAGER_ABI,
     POSITION_MANAGER_ADDRESS,
-    STAKED_DATA_KEY,
     TOOL_DATA_NAMESPACE,
 )
-from intentkit.tools.aerodrome.utils import format_amount, get_token_symbol
+from intentkit.tools.aerodrome.utils import (
+    format_amount,
+    get_token_symbol,
+    staked_data_key,
+)
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 NAME = "aerodrome_remove_liquidity"
 
@@ -28,6 +31,7 @@ UINT128_MAX = (1 << 128) - 1
 class AerodromeRemoveLiquidityInput(BaseModel):
     """Input for Aerodrome remove liquidity."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_id: int = Field(description="NFT position ID to remove liquidity from")
     percentage: float = Field(
         default=100.0,
@@ -43,6 +47,8 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
     """Remove liquidity from an Aerodrome Slipstream position on Base."""
 
     name: str = NAME
+    title: str = "Remove Liquidity"
+    team_only: bool = True
     description: str = (
         "Remove liquidity from an Aerodrome Slipstream position. "
         "Auto-unstakes from gauge if staked, harvesting AERO rewards. "
@@ -53,29 +59,22 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_id: int,
         percentage: float = 100.0,
         slippage: float = 0.5,
         **kwargs: Any,
     ) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
-
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"Aerodrome is only supported on Base. "
-                    f"Current network: {network_id}"
-                )
+            wallet = await self.get_unified_wallet(wallet_address)
+            # Validate the wallet network (Aerodrome is Base-only).
+            self._resolve_chain_id(wallet.network_id)
 
             if not 1 <= percentage <= 100:
                 raise ToolException("Percentage must be between 1 and 100")
 
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
-            wallet_address = Web3.to_checksum_address(wallet.address)
+            w3 = wallet.w3
+            checksum_wallet = Web3.to_checksum_address(wallet.address)
 
             pm_address = Web3.to_checksum_address(POSITION_MANAGER_ADDRESS)
             pm = w3.eth.contract(address=pm_address, abi=POSITION_MANAGER_ABI)
@@ -84,8 +83,9 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
             aero_reward = 0
             was_staked = False
 
+            data_key = staked_data_key(wallet_address)
             staked_data = await self.get_agent_tool_data_raw(
-                TOOL_DATA_NAMESPACE, STAKED_DATA_KEY
+                TOOL_DATA_NAMESPACE, data_key
             )
             if staked_data and token_id in staked_data.get("token_ids", []):
                 gauges = staked_data.get("gauges", {})
@@ -98,9 +98,9 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
                     # Get pending AERO before withdraw
                     try:
                         aero_reward = await gauge.functions.earned(
-                            wallet_address, token_id
+                            checksum_wallet, token_id
                         ).call()
-                    except Exception:
+                    except Exception:  # noqa: S110 - best-effort step; outcome is reflected in the result
                         pass
 
                     # Withdraw from gauge (returns NFT to wallet)
@@ -114,7 +114,7 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
                         raise ToolException(f"Gauge unstake failed. Hash: {tx_hash}")
 
                     # Remove from persisted staked list
-                    await self._remove_staked_token_id(token_id)
+                    await self._remove_staked_token_id(data_key, token_id)
 
             # Get position details
             pos_info = await pm.functions.positions(token_id).call()
@@ -148,7 +148,7 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
             # Collect all tokens + fees
             collect_data = pm.encode_abi(
                 "collect",
-                [(token_id, wallet_address, UINT128_MAX, UINT128_MAX)],
+                [(token_id, checksum_wallet, UINT128_MAX, UINT128_MAX)],
             )
             tx_hash = await wallet.send_transaction(
                 to=pm_address,
@@ -169,7 +169,7 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
                     )
                     burn_receipt = await wallet.wait_for_receipt(burn_tx)
                     burned = burn_receipt.get("status", 0) == 1
-                except Exception:
+                except Exception:  # noqa: S110 - best-effort step; outcome is reflected in the result
                     pass
 
             # Format result
@@ -198,11 +198,9 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
         except Exception as e:
             raise ToolException(f"Remove liquidity failed: {e!s}")
 
-    async def _remove_staked_token_id(self, token_id: int) -> None:
-        """Remove a token ID from the persisted staked list."""
-        staked_data = await self.get_agent_tool_data_raw(
-            TOOL_DATA_NAMESPACE, STAKED_DATA_KEY
-        )
+    async def _remove_staked_token_id(self, data_key: str, token_id: int) -> None:
+        """Remove a token ID from the persisted per-wallet staked list."""
+        staked_data = await self.get_agent_tool_data_raw(TOOL_DATA_NAMESPACE, data_key)
         if staked_data and "token_ids" in staked_data:
             token_ids = [tid for tid in staked_data["token_ids"] if tid != token_id]
             gauges = staked_data.get("gauges", {})
@@ -210,11 +208,11 @@ class AerodromeRemoveLiquidity(AerodromeBaseTool):
             if token_ids:
                 await self.save_agent_tool_data_raw(
                     TOOL_DATA_NAMESPACE,
-                    STAKED_DATA_KEY,
+                    data_key,
                     {"token_ids": token_ids, "gauges": gauges},
                 )
             else:
                 context = self.get_context()
                 await AgentToolData.delete(
-                    context.agent_id, TOOL_DATA_NAMESPACE, STAKED_DATA_KEY
+                    context.agent_id, TOOL_DATA_NAMESPACE, data_key
                 )

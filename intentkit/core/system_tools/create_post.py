@@ -10,12 +10,17 @@ from intentkit.core.agent_activity import create_agent_activity
 from intentkit.core.agent_post import create_agent_post
 from intentkit.core.system_tools.base import SystemTool
 from intentkit.models.agent_activity import AgentActivityCreate
-from intentkit.models.agent_post import AgentPostCreate
+from intentkit.models.agent_post import MAX_TAGS, SLUG_MAX_LENGTH, AgentPostCreate
 from intentkit.models.chat import ChatMessageAttachment, ChatMessageAttachmentType
 
 
 class CreatePostInput(BaseModel):
-    """Input schema for creating an agent post."""
+    """Input schema for creating an agent post.
+
+    slug and tags carry no hard length caps in the schema: LLMs occasionally
+    overshoot, and a hard schema rejection wastes a whole turn. Both are
+    clamped in _arun instead.
+    """
 
     title: str = Field(..., description="Post title", max_length=200)
     markdown: str = Field(
@@ -24,17 +29,34 @@ class CreatePostInput(BaseModel):
     )
     slug: str = Field(
         ...,
-        description="Unique URL slug",
-        max_length=60,
+        description=(
+            "Unique URL slug (letters, digits, hyphens), "
+            f"max {SLUG_MAX_LENGTH} characters"
+        ),
         pattern="^[a-zA-Z0-9-]+$",
     )
     excerpt: str = Field(
         ..., description="Short summary, max 200 chars", max_length=200
     )
-    tags: list[str] = Field(..., description="Tags, max 3", max_length=3)
+    tags: list[str] = Field(..., description=f"Tags, max {MAX_TAGS}")
     cover: str | None = Field(
         default=None, description="Cover image URL", max_length=1000
     )
+
+
+def _truncate_slug(slug: str) -> str:
+    """Cut an overlong slug to SLUG_MAX_LENGTH, preferring a hyphen boundary
+    so no half word is left dangling. Slugs within the limit pass through."""
+    if len(slug) <= SLUG_MAX_LENGTH:
+        return slug
+    truncated = slug[:SLUG_MAX_LENGTH]
+    head = truncated.rpartition("-")[0].rstrip("-")
+    # Back up to the hyphen boundary only when it keeps a reasonable share
+    # of the budget ("a-bbb..." must not collapse to "a"), and never return
+    # an empty slug (the model layer requires at least one character).
+    if len(head) >= SLUG_MAX_LENGTH // 2:
+        return head
+    return truncated.rstrip("-") or truncated
 
 
 class CreatePostTool(SystemTool):
@@ -45,6 +67,7 @@ class CreatePostTool(SystemTool):
     """
 
     name: str = "create_post"
+    team_only: bool = True
     description: str = (
         "Create a post with title, markdown body, and optional cover image."
     )
@@ -76,8 +99,12 @@ class CreatePostTool(SystemTool):
         """
 
         try:
+            self.ensure_own_team()
             context = self.get_context()
             agent_id = context.agent_id
+
+            slug = _truncate_slug(slug)
+            tags = [t.strip() for t in tags if t.strip()][:MAX_TAGS]
 
             post_create = AgentPostCreate(
                 agent_id=agent_id,
@@ -129,5 +156,5 @@ class CreatePostTool(SystemTool):
         except ToolException:
             raise
         except Exception as e:
-            self.logger.error("create_post failed: %s", e, exc_info=True)
+            self.logger.exception("create_post failed")
             raise ToolException(f"Failed to create post: {e}") from e

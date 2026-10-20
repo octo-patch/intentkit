@@ -5,7 +5,7 @@ from typing import Any, override
 from langchain_core.tools import ArgsSchema
 from pydantic import BaseModel, Field
 
-from .base import AcpBaseTool, acp_request, validate_url
+from .base import AcpBaseTool, acp_request
 
 
 class AcpCompleteCheckoutInput(BaseModel):
@@ -29,6 +29,7 @@ class AcpCompleteCheckout(AcpBaseTool):
     """
 
     name: str = "acp_complete_checkout"
+    title: str = "Complete Checkout"
     description: str = (
         "Complete an ACP checkout session after payment. "
         "Requires the session_id and tx_hash from a successful x402_pay call. "
@@ -45,7 +46,6 @@ class AcpCompleteCheckout(AcpBaseTool):
         timeout: float = 30.0,
         **_: Any,
     ) -> str:
-        validate_url(merchant_url)
         url = f"{merchant_url.rstrip('/')}/checkout_sessions/{session_id}/complete"
         response = await acp_request(
             "POST", url, timeout=timeout, json={"tx_hash": tx_hash}

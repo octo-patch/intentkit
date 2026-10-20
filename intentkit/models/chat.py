@@ -41,6 +41,11 @@ class ChatMessageAttachmentType(str, Enum):
     CHOICE = "choice"
 
 
+# Autonomous runs use chat ids of the form "autonomous-{task_id}"; shared so
+# consumers (prompt/memory/entrypoints) parse the task id one way.
+AUTONOMOUS_CHAT_PREFIX = "autonomous-"
+
+
 class AuthorType(str, Enum):
     """Type of message author."""
 
@@ -58,9 +63,13 @@ class AuthorType(str, Enum):
     WEB = "web"
     API = "api"
     WECHAT = "wechat"
+    LARK = "lark"
+    SLACK = "slack"
     XMTP = "xmtp"
     X402 = "x402"
-    INTERNAL = "internal"  # agent call agent
+    # Authored by another agent (call_agent); the real entry channel lives in
+    # thread_type — see ChatMessageCreate.thread_entrypoint.
+    INTERNAL = "internal"
 
 
 class ChatMessageAttachment(TypedDict):
@@ -103,13 +112,25 @@ class ChatMessageAttachment(TypedDict):
     ]
 
 
+# Name of the extra argument injected into every tool schema bound to the
+# model: a user-facing status line the LLM writes for each call. It is
+# stripped before the tool executes and lifted out of ``parameters`` into
+# ``ChatMessageToolCall.display_message`` when the call is persisted.
+# The name is reserved — tools must not define an argument with this name
+# (the persistence lift above cannot tell such an argument apart).
+DISPLAY_MESSAGE_ARG = "display_message"
+
+
 class ChatMessageToolCall(TypedDict):
     """TypedDict for tool call details."""
 
     id: NotRequired[str]
     name: str
     parameters: dict[str, object]
-    success: bool
+    success: NotRequired[bool]  # absent on pending frames (call still running)
+    display_message: NotRequired[
+        str
+    ]  # Agent-written status line shown to the user in place of the tool name
     response: NotRequired[
         str
     ]  # Optional response from the tool call, trimmed to 100 characters
@@ -336,6 +357,20 @@ class ChatMessageCreate(BaseModel):
             exclude=True,
         ),
     ] = None
+    payer: Annotated[
+        str | None,
+        Field(
+            None,
+            description=(
+                "Billing account override for internal sub-agent (call_agent) "
+                "runs, so the cost is charged to the original caller's team "
+                "rather than resolved from this message's channel. Kept "
+                "separate from team_id so delegation does not change the "
+                "sub-agent's access context (not persisted to DB)"
+            ),
+            exclude=True,
+        ),
+    ] = None
     call_depth: Annotated[
         int,
         Field(
@@ -345,19 +380,33 @@ class ChatMessageCreate(BaseModel):
         ),
     ] = 0
 
-    async def save_in_session(self, db: AsyncSession) -> "ChatMessage":
+    @property
+    def thread_entrypoint(self) -> AuthorType:
+        """Entry channel of this message's thread.
+
+        ``thread_type`` carries the original user entry channel (web, telegram,
+        trigger, ...) and is inherited across call_agent chains, so it wins over
+        ``author_type`` (which is INTERNAL for sub-agent input messages). Falls
+        back to ``author_type`` for messages without a thread_type.
+        """
+        return self.thread_type or self.author_type
+
+    async def save_in_session(self, db: AsyncSession) -> ChatMessage:
         """Save the chat message to the database.
 
         Returns:
             ChatMessage: The saved chat message with all fields populated
         """
-        message_record = ChatMessageTable(**self.model_dump(mode="json"))
+        # ``pending`` (ChatMessage only) is a stream-frame marker, not a column.
+        message_record = ChatMessageTable(
+            **self.model_dump(mode="json", exclude={"pending"})
+        )
         db.add(message_record)
         await db.flush()
         await db.refresh(message_record)
         return ChatMessage.model_validate(message_record)
 
-    async def save(self) -> "ChatMessage":
+    async def save(self) -> ChatMessage:
         """Save the chat message to the database.
 
         Returns:
@@ -379,7 +428,7 @@ class ChatMessageCreate(BaseModel):
         thread_type: AuthorType,
         reply_to: str,
         time_cost: float = 0.0,
-    ) -> "ChatMessageCreate":
+    ) -> ChatMessageCreate:
         """Create a system message.
 
         Returns:
@@ -415,6 +464,17 @@ class ChatMessage(ChatMessageCreate):
     created_at: Annotated[
         datetime, Field(description="Timestamp when this message was created")
     ]
+    pending: Annotated[
+        bool,
+        Field(
+            False,
+            description=(
+                "Transient stream frame: the tool calls in this message are "
+                "still executing. Never persisted — result messages carrying "
+                "the same tool call ids follow when they finish."
+            ),
+        ),
+    ] = False
 
     @field_serializer("created_at")
     @classmethod
@@ -426,7 +486,7 @@ class ChatMessage(ChatMessageCreate):
         resp = ""
         if self.tool_calls:
             for call in self.tool_calls:
-                resp += f"{call['name']} {call['parameters']}: {call.get('response', '') if call['success'] else call.get('error_message', '')}\n"
+                resp += f"{call['name']} {call['parameters']}: {call.get('response', '') if call.get('success') else call.get('error_message', '')}\n"
             resp += "\n"
         resp += self.message
         return resp
@@ -447,7 +507,9 @@ class ChatMessage(ChatMessageCreate):
             resp += f"[ Tool Calls: ] ({self.created_at.strftime('%Y-%m-%d %H:%M:%S')} UTC)\n\n"
             for tool_call in self.tool_calls:
                 resp += f" {tool_call['name']}: {tool_call['parameters']}\n"
-                if tool_call["success"]:
+                if "success" not in tool_call:
+                    resp += "  Running...\n"
+                elif tool_call["success"]:
                     resp += f"  Success: {tool_call.get('response', '')}\n"
                 else:
                     resp += f"  Failed: {tool_call.get('error_message', '')}\n"
@@ -479,7 +541,7 @@ class ChatMessage(ChatMessageCreate):
 
         return resp
 
-    def sanitize_privacy(self) -> "ChatMessage":
+    def sanitize_privacy(self) -> ChatMessage:
         """Remove sensitive information from the chat message.
 
         This method clears the tool parameters and response
@@ -493,7 +555,8 @@ class ChatMessage(ChatMessageCreate):
         # Create a copy of the current message
         sanitized_data = self.model_dump()
 
-        # Clear sensitive data from tool calls
+        # Clear sensitive data from tool calls. display_message is kept:
+        # it is authored by the agent for display, like the message text.
         if sanitized_data.get("tool_calls"):
             for tool_call in sanitized_data["tool_calls"]:
                 # Clear parameters and response while keeping structure
@@ -511,6 +574,23 @@ class ChatMessage(ChatMessageCreate):
             if raw:
                 return ChatMessage.model_validate(raw)
             return None
+
+
+async def sum_thread_token_usage(agent_id: str, chat_id: str) -> tuple[int, int]:
+    """Sum ``(input_tokens, cached_input_tokens)`` over a thread's messages."""
+    async with get_session() as db:
+        row = (
+            await db.execute(
+                select(
+                    func.coalesce(func.sum(ChatMessageTable.input_tokens), 0),
+                    func.coalesce(func.sum(ChatMessageTable.cached_input_tokens), 0),
+                ).where(
+                    ChatMessageTable.agent_id == agent_id,
+                    ChatMessageTable.chat_id == chat_id,
+                )
+            )
+        ).one()
+        return int(row[0]), int(row[1])
 
 
 class ChatTable(Base):
@@ -571,7 +651,7 @@ class ChatCreate(BaseModel):
     summary: Annotated[str, Field("", description="Summary of the chat")]
     rounds: Annotated[int, Field(0, description="Number of rounds in the chat")]
 
-    async def save(self) -> "Chat":
+    async def save(self) -> Chat:
         """Create a new chat in the database.
 
         Returns:
@@ -653,7 +733,7 @@ class Chat(ChatCreate):
             # Update local object
             self.rounds += 1
 
-    async def update_summary(self, summary: str) -> "Chat":
+    async def update_summary(self, summary: str) -> Chat:
         """Update the chat summary in the database.
 
         Uses a direct SQL UPDATE statement to set the summary field.
@@ -676,7 +756,7 @@ class Chat(ChatCreate):
             return self
 
     @classmethod
-    async def get_by_agent_user(cls, agent_id: str, user_id: str) -> list["Chat"]:
+    async def get_by_agent_user(cls, agent_id: str, user_id: str) -> list[Chat]:
         """Get all chats for a specific agent and user.
 
         Args:

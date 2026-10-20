@@ -1,21 +1,54 @@
-"""Tests for get_valid_tools_registry utility."""
+"""Tests for the class-derived tool catalog."""
 
-from intentkit.core.agent.tool_registry import get_valid_tools_registry
-
-
-def test_get_valid_tools_registry_returns_categories():
-    """Registry must return a dict keyed by category with tool dicts inside."""
-    registry = get_valid_tools_registry()
-    assert isinstance(registry, dict)
-    assert "ui" in registry
-    assert "ui_show_card" in registry["ui"]
-    assert "ui_ask_user" in registry["ui"]
-    assert isinstance(registry["ui"]["ui_show_card"], str)
-    assert len(registry["ui"]["ui_show_card"]) > 0
+from intentkit.core.agent.tool_registry import get_tool_catalog, get_wallet_categories
 
 
-def test_get_valid_tools_registry_has_no_empty_categories():
+def test_get_tool_catalog_returns_categories():
+    """Catalog must be keyed by category with the x-catalog wire shape inside."""
+    catalog = get_tool_catalog()
+    assert isinstance(catalog, dict)
+    http = catalog["http"]
+    assert isinstance(http["title"], str) and http["title"]
+    assert isinstance(http["description"], str)
+    assert isinstance(http["x-tags"], list)
+    assert "http_get" in http["tools"]
+    assert "http_post" in http["tools"]
+    assert http["tools"]["http_get"]["title"]
+    assert http["tools"]["http_get"]["description"]
+
+
+def test_ui_tools_absent_from_catalog():
+    """ui_show_card / ui_ask_user moved to system tools and must not be
+    user-selectable anymore."""
+    catalog = get_tool_catalog()
+    assert "ui" not in catalog
+    all_tool_names = {name for cat in catalog.values() for name in cat["tools"]}
+    assert "ui_show_card" not in all_tool_names
+    assert "ui_ask_user" not in all_tool_names
+
+
+def test_web3_categories_flagged():
+    """Web3 toolsets carry x-web3 so pickers can group them under Web3 Tools."""
+    catalog = get_tool_catalog()
+    # Wallet-operating toolsets are web3 by definition.
+    assert catalog["erc20"].get("x-web3") is True
+    # Read/analytics crypto toolsets are web3-themed without wallet semantics.
+    assert catalog["moralis"].get("x-web3") is True
+    assert "x-web3" not in catalog["http"]
+
+
+def test_wallet_categories_are_wallet_operating_only():
+    """Only wallet-operating toolsets carry runtime wallet requirements."""
+    wallet = get_wallet_categories()
+    assert "erc20" in wallet
+    assert "cdp" in wallet
+    # Web3-themed data toolsets must not be wallet-gated.
+    assert "moralis" not in wallet
+    assert "dexscreener" not in wallet
+    assert "http" not in wallet
+
+
+def test_get_tool_catalog_has_no_empty_categories():
     """Every category must have at least one tool."""
-    registry = get_valid_tools_registry()
-    for category, tools in registry.items():
-        assert len(tools) > 0, f"Category '{category}' has no tools"
+    for category, payload in get_tool_catalog().items():
+        assert len(payload["tools"]) > 0, f"Category '{category}' has no tools"

@@ -22,7 +22,13 @@ import { ThinkingBlock } from "@/components/features/ThinkingBlock";
 import { MarkdownRenderer } from "@/components/ui/markdown-renderer";
 import { ImageAttachment } from "@/components/features/ImageAttachment";
 import { VideoAttachment } from "@/components/features/VideoAttachment";
-import { isUserAuthoredMessage } from "@/types/chat";
+import { ChatTimeSeparator } from "@/components/features/ChatTimeSeparator";
+import { formatExactTime, shouldShowTimeSeparator } from "@/lib/chatTime";
+import {
+  apiMessageToUIMessage,
+  dropPendingMessages,
+  foldToolResultMessage,
+} from "@/types/chat";
 import type {
   UIMessage,
   ChatThread,
@@ -39,22 +45,6 @@ function isThreadOlderThanThreeDays(thread: ChatThread): boolean {
   const threeDaysAgo = new Date();
   threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
   return updatedAt < threeDaysAgo;
-}
-
-function apiMessageToUIMessage(msg: ChatMessage): UIMessage {
-  const isSystem = msg.author_type === "system";
-  const isUserMessage = !isSystem && isUserAuthoredMessage(msg.author_type);
-  return {
-    id: msg.id,
-    role: isSystem ? "system" : isUserMessage ? "user" : "agent",
-    authorType: msg.author_type,
-    content: msg.message,
-    thinking: msg.thinking,
-    errorType: msg.error_type,
-    timestamp: new Date(msg.created_at),
-    toolCalls: msg.tool_calls,
-    attachments: msg.attachments,
-  };
 }
 
 function hasUIAttachments(msg: UIMessage): boolean {
@@ -210,6 +200,11 @@ export default function LeadChatPage() {
 
     if (searchParams.get("new") === "true") {
       if (!isNewThread) {
+        // Mirrors the URL/thread-list into local selection state — a navigation
+        // sync with external state, guarded so each setState only fires on a
+        // real change (no cascade). A derive-during-render rewrite would mean
+        // restructuring the whole chat-init flow, so keep the guarded effect.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setIsNewThread(true);
         setCurrentThreadId(null);
         setMessages([]);
@@ -270,6 +265,10 @@ export default function LeadChatPage() {
     }
 
     if (!currentThreadId || isNewThread) {
+      // This effect loads thread history from the API (a valid external-data
+      // sync); clearing stale messages first is part of that load, not a render
+      // cascade.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages([]);
       return;
     }
@@ -382,11 +381,14 @@ export default function LeadChatPage() {
         )) {
           const uiMsg = apiMessageToUIMessage(msg);
           setMessages((prev) => {
-            const existing = prev.find((m) => m.id === uiMsg.id);
+            // A finished tool call folds its result into the pending frame
+            // that announced it (matched by tool call id).
+            const next = foldToolResultMessage(prev, uiMsg);
+            const existing = next.find((m) => m.id === uiMsg.id);
             if (existing) {
-              return prev.map((m) => (m.id === uiMsg.id ? uiMsg : m));
+              return next.map((m) => (m.id === uiMsg.id ? uiMsg : m));
             }
-            return [...prev, uiMsg];
+            return [...next, uiMsg];
           });
         }
 
@@ -412,6 +414,9 @@ export default function LeadChatPage() {
       } finally {
         abortControllerRef.current = null;
         setIsSending(false);
+        // Calls that never reported a result are not in the DB either —
+        // drop their leftover pending frames.
+        setMessages(dropPendingMessages);
       }
     },
     [
@@ -533,7 +538,10 @@ export default function LeadChatPage() {
                 </p>
               </div>
             ) : (
-              messages.map((msg) =>
+              messages.flatMap((msg, index) => {
+                const previousMessage =
+                  index > 0 ? messages[index - 1] : undefined;
+                const messageContent =
                 msg.role === "system" ? (
                   <div key={msg.id} className="flex justify-center w-full">
                     <span
@@ -605,11 +613,17 @@ export default function LeadChatPage() {
                       )}
                     >
                       {msg.role === "agent" ? (
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-primary text-primary-foreground">
+                        <div
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-primary text-primary-foreground"
+                          title={formatExactTime(msg.timestamp)}
+                        >
                           <Bot className="h-4 w-4" />
                         </div>
                       ) : (
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-muted">
+                        <div
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-muted"
+                          title={formatExactTime(msg.timestamp)}
+                        >
                           <User className="h-4 w-4" />
                         </div>
                       )}
@@ -671,8 +685,20 @@ export default function LeadChatPage() {
                       </div>
                     </div>
                   </React.Fragment>
-                ),
-              )
+                );
+                return shouldShowTimeSeparator(
+                  previousMessage?.timestamp,
+                  msg.timestamp,
+                )
+                  ? [
+                      <ChatTimeSeparator
+                        key={`time-${msg.id}`}
+                        date={msg.timestamp}
+                      />,
+                      messageContent,
+                    ]
+                  : messageContent;
+              })
             )}
             {isSending && (
               <div className="flex w-full gap-2 max-w-[85%]">

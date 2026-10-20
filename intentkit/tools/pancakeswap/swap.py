@@ -8,10 +8,10 @@ from langchain_core.tools.base import ToolException
 from pydantic import BaseModel, Field
 from web3 import Web3
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.pancakeswap.base import PancakeSwapBaseTool
 from intentkit.tools.pancakeswap.constants import (
     FEE_TIERS,
-    NETWORK_TO_CHAIN_ID,
     QUOTER_V2_ABI,
     QUOTER_V2_ADDRESSES,
     SMART_ROUTER_ABI,
@@ -29,6 +29,7 @@ NAME = "pancakeswap_swap"
 class PancakeSwapSwapInput(BaseModel):
     """Input for PancakeSwap swap."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_in: str = Field(
         description="Input token address, or 'native' for native token"
     )
@@ -48,6 +49,8 @@ class PancakeSwapSwap(PancakeSwapBaseTool):
     """Execute a PancakeSwap V3 token swap."""
 
     name: str = NAME
+    title: str = "Execute Swap"
+    team_only: bool = True
     description: str = (
         "Execute a token swap on PancakeSwap V3. "
         "Handles ERC20 approval automatically. "
@@ -58,6 +61,7 @@ class PancakeSwapSwap(PancakeSwapBaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_in: str,
         token_out: str,
         amount: str,
@@ -65,24 +69,15 @@ class PancakeSwapSwap(PancakeSwapBaseTool):
         **kwargs: Any,
     ) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
-
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"PancakeSwap not supported on {network_id}. "
-                    f"Supported: {', '.join(NETWORK_TO_CHAIN_ID.keys())}"
-                )
+            wallet = await self.get_unified_wallet(wallet_address)
+            chain_id = self._resolve_chain_id(wallet.network_id)
 
             router_address = SMART_ROUTER_ADDRESSES.get(chain_id)
             quoter_address = QUOTER_V2_ADDRESSES.get(chain_id)
             if not router_address or not quoter_address:
                 raise ToolException(f"No PancakeSwap contracts for chain {chain_id}")
 
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
+            w3 = wallet.w3
 
             # Resolve tokens
             is_native_in = token_in.lower() == "native"
@@ -121,7 +116,7 @@ class PancakeSwapSwap(PancakeSwapBaseTool):
                     if result[0] > best_out:
                         best_out = result[0]
                         best_fee = fee
-                except Exception:
+                except Exception:  # noqa: S112 - expected miss while probing candidates
                     continue
 
             if best_out == 0:

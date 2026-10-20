@@ -64,6 +64,7 @@ class ScrapeAndIndex(WebScraperBaseTool):
     """
 
     name: str = "web_scraper_scrape_and_index"
+    title: str = "Scrape & Index Content"
     description: str = (
         "Scrape web URLs and index content into a vector store. "
         "Query later with query_indexed_content tool."
@@ -82,7 +83,6 @@ class ScrapeAndIndex(WebScraperBaseTool):
         try:
             # Get agent context - throw error if not available
             # Configuration is always available in new runtime
-            pass
 
             context = self.get_context()
             if not context or not context.agent_id:
@@ -153,17 +153,8 @@ class ScrapeAndIndex(WebScraperBaseTool):
             return response
 
         except Exception as e:
-            # Extract agent_id for error logging if possible
-            agent_id = "UNKNOWN"
-            try:
-                # TODO: Fix config reference
-                context = self.get_context()
-                if context and context.agent_id:
-                    agent_id = context.agent_id
-            except Exception:
-                pass
-
-            logger.error("[%s] Error in ScrapeAndIndex: %s", agent_id, e, exc_info=True)
+            agent_id = self.agent_id_for_log()
+            logger.exception("[%s] Error in ScrapeAndIndex", agent_id)
             raise type(e)(f"[agent:{agent_id}]: {e}") from e
 
 
@@ -175,6 +166,7 @@ class QueryIndexedContent(WebScraperBaseTool):
     """
 
     name: str = "web_scraper_query_indexed_content"
+    title: str = "Query Indexed Content"
     description: str = (
         "Query previously indexed web content to find relevant information."
     )
@@ -190,7 +182,6 @@ class QueryIndexedContent(WebScraperBaseTool):
         try:
             # Get agent context - throw error if not available
             # Configuration is always available in new runtime
-            pass
 
             context = self.get_context()
             if not context or not context.agent_id:
@@ -255,17 +246,6 @@ class QueryIndexedContent(WebScraperBaseTool):
             return response
 
         except Exception as e:
-            # Extract agent_id for error logging if possible
-            agent_id = "UNKNOWN"
-            try:
-                # TODO: Fix config reference
-                context = self.get_context()
-                if context and context.agent_id:
-                    agent_id = context.agent_id
-            except Exception:
-                pass
-
-            logger.error(
-                f"[{agent_id}] Error in QueryIndexedContent: {e}", exc_info=True
-            )
+            agent_id = self.agent_id_for_log()
+            logger.exception(f"[{agent_id}] Error in QueryIndexedContent")
             raise type(e)(f"[agent:{agent_id}]: {e}") from e

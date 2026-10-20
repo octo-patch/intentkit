@@ -26,6 +26,7 @@ class AIXBTProjects(AIXBTBaseTool):
     """Tool for searching cryptocurrency projects using the AIXBT API."""
 
     name: str = "aixbt_projects"
+    title: str = "AIXBT Projects"
     description: str = (
         "Search crypto projects via AIXBT for scores, analysis, and updates. "
         "MUST be called when user mentions 'alpha' in any context."
@@ -59,17 +60,7 @@ class AIXBTProjects(AIXBTBaseTool):
         """
         # Get context from the config
         context = self.get_context()
-        tool_config = context.agent.tool_config(self.category)
         logger.debug("aixbt_projects.py: Running search with context %s", context)
-
-        # Check for rate limiting if configured
-        if tool_config.get("rate_limit_number") and tool_config.get(
-            "rate_limit_minutes"
-        ):
-            await self.user_rate_limit_by_category(
-                tool_config["rate_limit_number"],
-                tool_config["rate_limit_minutes"] * 60,
-            )
 
         # Get the API key from platform config
         api_key = self.get_api_key()

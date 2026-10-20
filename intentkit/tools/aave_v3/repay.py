@@ -16,6 +16,7 @@ from intentkit.tools.aave_v3.utils import (
     get_decimals,
     get_token_symbol,
 )
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 NAME = "aave_v3_repay"
 
@@ -23,6 +24,7 @@ NAME = "aave_v3_repay"
 class RepayInput(BaseModel):
     """Input for Aave V3 repay."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_address: str = Field(description="ERC20 token contract address to repay")
     amount: str = Field(
         description="Amount to repay in human-readable units (e.g. '100'), or 'max' to repay full debt"
@@ -37,6 +39,8 @@ class AaveV3Repay(AaveV3BaseTool):
     """Repay borrowed tokens on Aave V3."""
 
     name: str = NAME
+    title: str = "Repay"
+    team_only: bool = True
     description: str = (
         "Repay borrowed tokens on Aave V3. "
         "Use 'max' as amount to repay the full outstanding debt. "
@@ -47,26 +51,27 @@ class AaveV3Repay(AaveV3BaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_address: str,
         amount: str,
         interest_rate_mode: int = 2,
         **kwargs: Any,
     ) -> str:
         try:
-            chain_id = self._resolve_chain_id()
-
             if interest_rate_mode not in (1, 2):
                 raise ToolException(
                     "interest_rate_mode must be 1 (stable) or 2 (variable)"
                 )
 
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
+            wallet = await self.get_unified_wallet(wallet_address)
+            network_id = wallet.network_id
+            chain_id = self._resolve_chain_id(network_id)
+            w3 = wallet.w3
 
             pool_address = POOL_ADDRESSES[chain_id]
             checksum_token = Web3.to_checksum_address(token_address)
             checksum_pool = Web3.to_checksum_address(pool_address)
-            wallet_address = Web3.to_checksum_address(wallet.address)
+            checksum_wallet = Web3.to_checksum_address(wallet.address)
 
             decimals, symbol = await asyncio.gather(
                 get_decimals(w3, checksum_token, chain_id),
@@ -89,7 +94,7 @@ class AaveV3Repay(AaveV3BaseTool):
             pool = w3.eth.contract(address=checksum_pool, abi=POOL_ABI)
             repay_data = pool.encode_abi(
                 "repay",
-                [checksum_token, amount_raw, interest_rate_mode, wallet_address],
+                [checksum_token, amount_raw, interest_rate_mode, checksum_wallet],
             )
 
             tx_hash = await wallet.send_transaction(
@@ -107,7 +112,7 @@ class AaveV3Repay(AaveV3BaseTool):
                 f"**Aave V3 Repay**\n"
                 f"Repaid: {amount_display} {symbol}\n"
                 f"Rate Mode: {rate_mode_str}\n"
-                f"Network: {self.get_agent_network_id()}\n"
+                f"Network: {network_id}\n"
                 f"Tx: {tx_hash}"
             )
 

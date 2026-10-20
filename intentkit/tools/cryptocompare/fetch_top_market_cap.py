@@ -27,6 +27,7 @@ class CryptoCompareFetchTopMarketCap(CryptoCompareBaseTool):
     """Tool for fetching top cryptocurrencies by market cap from CryptoCompare."""
 
     name: str = "cryptocompare_fetch_top_market_cap"
+    title: str = "Fetch Top Market Cap"
     description: str = "Fetch top cryptocurrencies ranked by market cap."
     args_schema: ArgsSchema | None = CryptoCompareFetchTopMarketCapInput
 
@@ -66,7 +67,7 @@ class CryptoCompareFetchTopMarketCap(CryptoCompareBaseTool):
 
             # Convert to list of CryptoCurrency objects
             result = []
-            if "Data" in market_cap_data and market_cap_data["Data"]:
+            if market_cap_data.get("Data"):
                 for item in market_cap_data["Data"]:
                     coin_info = item.get("CoinInfo", {})
                     raw_data = item.get("RAW", {}).get(to_symbol, {})

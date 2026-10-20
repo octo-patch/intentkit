@@ -6,6 +6,7 @@ from langchain_core.tools.base import ToolException
 from pydantic import BaseModel, Field
 
 from intentkit.tools.enso.networks import EnsoGetNetworks
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 from .base import EnsoBaseTool, base_url, format_amount_with_decimals
 
@@ -15,13 +16,14 @@ class EnsoRouteShortcutInput(BaseModel):
     Input model for finding best route for swap or deposit.
     """
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     broadcast_requested: bool = Field(
         False,
         description="Whether to broadcast the transaction (default false)",
     )
     chainId: int | None = Field(
         None,
-        description="Chain ID (defaults to agent network)",
+        description="Chain ID (defaults to the wallet's network)",
     )
     amountIn: list[int] = Field(
         description="Amount in wei (multiply value by token decimals)"
@@ -145,11 +147,14 @@ class EnsoRouteShortcut(EnsoBaseTool):
     """
 
     name: str = "enso_route_shortcut"
+    title: str = "Route Shortcut"
+    team_only: bool = True
     description: str = "Find optimal swap/deposit route across DeFi protocols. Can broadcast if requested."
     args_schema: ArgsSchema | None = EnsoRouteShortcutInput
 
     async def _arun(
         self,
+        wallet_address: str,
         amountIn: list[int],
         tokenIn: list[str],
         tokenOut: list[str],
@@ -161,10 +166,11 @@ class EnsoRouteShortcut(EnsoBaseTool):
         Run the tool to get swap route information.
 
         Args:
+            wallet_address (str): Address of the team wallet to route from.
             amountIn (list[int]): Amount of tokenIn to swap in wei, you should multiply user's requested value by token decimals.
             tokenIn (list[str]): Ethereum address of the token to swap or enter into a position from (For ETH, use 0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee).
             tokenOut (list[str]): Ethereum address of the token to swap or enter into a position to (For ETH, use 0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee).
-            chainId (int | None): The chain id of the network to be used for swap, deposit and routing. Defaults to the agent's configured network.
+            chainId (int | None): The chain id of the network to be used for swap, deposit and routing. Defaults to the wallet's network.
             broadcast_requested (bool): User should ask for broadcasting the transaction explicitly, otherwise it is always false.
 
         Returns:
@@ -172,11 +178,11 @@ class EnsoRouteShortcut(EnsoBaseTool):
         """
 
         context = self.get_context()
-        resolved_chain_id = self.resolve_chain_id(context, chainId)
+        # Quoting is a read: only validate team ownership. The guarded wallet
+        # provider is acquired later, and only when broadcasting is requested.
+        wallet = await self.resolve_wallet(wallet_address)
+        resolved_chain_id = self.resolve_chain_id(chainId, wallet.network)
         api_token = self.get_api_token(context)
-        # Use the wallet provider to send the transaction
-        wallet_provider = await self.get_wallet_provider()
-        wallet_address = wallet_provider.get_address()
 
         async with httpx.AsyncClient() as client:
             try:
@@ -230,12 +236,13 @@ class EnsoRouteShortcut(EnsoBaseTool):
 
                 # Prepare query parameters
                 params = EnsoRouteShortcutInput(
+                    wallet_address=wallet_address,
                     broadcast_requested=broadcast_requested,
                     chainId=resolved_chain_id,
                     amountIn=amountIn,
                     tokenIn=tokenIn,
                     tokenOut=tokenOut,
-                ).model_dump(exclude_none=True)
+                ).model_dump(exclude_none=True, exclude={"wallet_address"})
 
                 params["fromAddress"] = wallet_address
 
@@ -253,6 +260,8 @@ class EnsoRouteShortcut(EnsoBaseTool):
                     res.amountOut = amount_out
 
                 if broadcast_requested:
+                    # Signing path: acquire the guarded wallet provider.
+                    wallet_provider = await self.get_wallet_provider(wallet_address)
                     # Extract transaction data from the Enso API response
                     tx_data = json_dict.get("tx", {})
                     if tx_data:

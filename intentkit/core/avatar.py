@@ -4,12 +4,12 @@ import logging
 from typing import Any
 
 import httpx
-import openrouter
 from google import genai
 from google.genai import types
 from openai import AsyncOpenAI
 from PIL import Image
 
+from intentkit.clients.openrouter import get_openrouter_client
 from intentkit.clients.s3 import store_image_bytes
 from intentkit.config.config import config
 
@@ -22,11 +22,7 @@ OPENROUTER_IMAGE_MODEL = "bytedance-seed/seedream-4.5"
 _PROMPT_FIELDS: list[tuple[str, str]] = [
     ("name", "Name"),
     ("description", "Description"),
-    ("purpose", "Purpose"),
-    ("personality", "Personality"),
-    ("principles", "Principles"),
-    ("prompt", "System Prompt"),
-    ("prompt_append", "Additional Prompt"),
+    ("system_prompt", "System Prompt"),
     ("extra_prompt", "Extra Prompt"),
 ]
 
@@ -92,13 +88,7 @@ async def generate_image_openrouter(prompt: str) -> bytes | None:
     so we ask for `["image"]` which is accepted by all image-output models.
     """
     try:
-        client = openrouter.OpenRouter(
-            api_key=config.openrouter_api_key,
-            http_referer="https://github.com/crestalnetwork/intentkit",
-            x_open_router_title="IntentKit",
-            x_open_router_categories="cloud-agent",
-            timeout_ms=120_000,
-        )
+        client = get_openrouter_client()
         response = await client.chat.send_async(
             model=OPENROUTER_IMAGE_MODEL,
             modalities=["image"],
@@ -154,11 +144,11 @@ def _extract_openrouter_image_url(response: Any) -> str | None:
 
 
 async def generate_image_google(prompt: str) -> bytes | None:
-    """Generate image using Google Gemini gemini-3.1-flash-image-preview."""
+    """Generate image using Google Gemini gemini-3.1-flash-image."""
     try:
         client = genai.Client(api_key=config.google_api_key)
         response = await client.aio.models.generate_content(
-            model="gemini-3.1-flash-image-preview",
+            model="gemini-3.1-flash-image",
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_modalities=["IMAGE", "TEXT"],
@@ -254,12 +244,16 @@ async def select_model_and_generate(prompt: str) -> bytes | None:
 
 
 def build_agent_profile(agent_id: str, agent: Any) -> str:
-    """Extract prompt-related fields from an agent object and build a profile string."""
+    """Extract prompt-related fields from an agent object and build a profile string.
+
+    Fields are capped so a maximum-size system prompt (200k chars) doesn't
+    blow up the avatar-prompt LLM call — the gist is enough for an avatar.
+    """
     sections: list[str] = []
     for field_name, label in _PROMPT_FIELDS:
         value = getattr(agent, field_name, None)
         if value and isinstance(value, str) and value.strip():
-            sections.append(f"### {label}\n{value.strip()}")
+            sections.append(f"### {label}\n{value.strip()[:4000]}")
 
     if not sections:
         # Fallback: at least use the agent id
@@ -287,7 +281,7 @@ async def generate_image_prompt_from_profile(profile: str, system_prompt: str) -
     from intentkit.models.llm_picker import pick_summarize_model
 
     model_name = pick_summarize_model()
-    llm = await create_llm_model(model_name, temperature=0.9)
+    llm = await create_llm_model(model_name)
     model = await llm.create_instance()
 
     response = await model.ainvoke(

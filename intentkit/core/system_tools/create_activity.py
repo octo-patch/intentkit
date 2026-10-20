@@ -42,6 +42,7 @@ class CreateActivityTool(SystemTool):
     """Tool for creating a new agent activity."""
 
     name: str = "create_activity"
+    team_only: bool = True
     description: str = (
         "Publish an activity to your public timeline. "
         "IMPORTANT: Only use this tool when the user EXPLICITLY asks you to create, publish, or post an activity. "
@@ -69,6 +70,7 @@ class CreateActivityTool(SystemTool):
             A message indicating success with the activity ID.
         """
         try:
+            self.ensure_own_team()
             context = self.get_context()
             agent_id = context.agent_id
 
@@ -93,5 +95,5 @@ class CreateActivityTool(SystemTool):
         except ToolException:
             raise
         except Exception as e:
-            self.logger.error("create_activity failed: %s", e, exc_info=True)
+            self.logger.exception("create_activity failed")
             raise ToolException(f"Failed to create activity: {e}") from e

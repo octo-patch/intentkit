@@ -43,6 +43,7 @@ class DappLookerTokenData(DappLookerBaseTool):
     """
 
     name: str = "dapplooker_token_data"
+    title: str = "AI Token Data"
     description: str = (
         "Fetch AI agent token market data from DappLooker. "
         "Query by ticker or contract address. Provide token_tickers or token_addresses."
@@ -196,11 +197,8 @@ class DappLookerTokenData(DappLookerBaseTool):
                 # Format the results
                 return self._format_token_data(data)  # pyright: ignore[reportArgumentType]
 
-        except Exception as e:
-            logger.error(
-                f"dapplooker_token_data.py: Error retrieving token data: {e}",
-                exc_info=True,
-            )
+        except Exception:
+            logger.exception("dapplooker_token_data.py: Error retrieving token data")
             return (
                 "An error occurred while retrieving token data. Please try again later."
             )

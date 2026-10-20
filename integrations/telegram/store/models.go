@@ -11,7 +11,6 @@ type Agent struct {
 	ID                        string            `gorm:"primaryKey;type:varchar"`
 	TelegramEntrypointEnabled bool              `gorm:"default:false"`
 	TelegramConfig            datatypes.JSONMap `gorm:"type:jsonb"`
-	DeployedAt                *time.Time
 	UpdatedAt                 time.Time
 }
 
@@ -58,4 +57,18 @@ type TeamChannelData struct {
 // TableName overrides the table name for TeamChannelData
 func (TeamChannelData) TableName() string {
 	return "team_channel_data"
+}
+
+// TeamChannelChat binds an external chat to a team for the shared official bot.
+// The bot resolves the owning team by querying this by (channel_type, chat_id).
+type TeamChannelChat struct {
+	ChannelType string `gorm:"primaryKey"`
+	ChatID      string `gorm:"primaryKey"`
+	TeamID      string
+	ChatName    *string
+}
+
+// TableName overrides the table name for TeamChannelChat
+func (TeamChannelChat) TableName() string {
+	return "team_channel_chats"
 }

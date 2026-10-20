@@ -53,8 +53,12 @@ import { ImageAttachment } from "@/components/features/ImageAttachment";
 import { VideoAttachment } from "@/components/features/VideoAttachment";
 import { toast } from "@/hooks/use-toast";
 import { useAgentSlugRewrite } from "@/hooks/useAgentSlugRewrite";
-import { isUserAuthoredMessage } from "@/types/chat";
-import type { UIMessage, ChatThread, ChatMessage } from "@/types/chat";
+import {
+  apiMessageToUIMessage,
+  dropPendingMessages,
+  foldToolResultMessage,
+} from "@/types/chat";
+import type { UIMessage, ChatThread } from "@/types/chat";
 import { buildChatThreadPath } from "@/lib/autonomousChat";
 import type { StreamStatus } from "@/lib/chatStreamStore";
 import {
@@ -64,6 +68,8 @@ import {
   subscribeToChatStream,
 } from "@/lib/chatStreamStore";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { ChatTimeSeparator } from "@/components/features/ChatTimeSeparator";
+import { formatExactTime, shouldShowTimeSeparator } from "@/lib/chatTime";
 
 // Tailwind prose classes for markdown rendering in chat bubbles
 const markdownProseClass =
@@ -75,23 +81,6 @@ function isThreadOlderThanThreeDays(thread: ChatThread): boolean {
   const threeDaysAgo = new Date();
   threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
   return updatedAt < threeDaysAgo;
-}
-
-// Convert API ChatMessage to UI message
-function apiMessageToUIMessage(msg: ChatMessage): UIMessage {
-  const isSystem = msg.author_type === "system";
-  const isUserMessage = !isSystem && isUserAuthoredMessage(msg.author_type);
-  return {
-    id: msg.id,
-    role: isSystem ? "system" : isUserMessage ? "user" : "agent",
-    authorType: msg.author_type,
-    content: msg.message,
-    thinking: msg.thinking,
-    errorType: msg.error_type,
-    timestamp: new Date(msg.created_at),
-    toolCalls: msg.tool_calls,
-    attachments: msg.attachments,
-  };
 }
 
 // Check if message has non-xmtp attachments (UI attachments)
@@ -257,6 +246,11 @@ export default function AgentChatPage() {
     // Handle explicit new thread from URL
     if (searchParams.get("new") === "true") {
       if (!isNewThread) {
+        // Mirrors the URL/thread-list into local selection state — a navigation
+        // sync with external state, guarded so each setState only fires on a
+        // real change (no cascade). A derive-during-render rewrite would mean
+        // restructuring the whole chat-init flow, so keep the guarded effect.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setIsNewThread(true);
         setCurrentThreadId(null);
         setMessages([]);
@@ -328,6 +322,10 @@ export default function AgentChatPage() {
     if (isSending) return;
 
     if (!currentThreadId || !resolvedId || isNewThread) {
+      // This effect loads thread history from the API (a valid external-data
+      // sync); clearing stale messages first is part of that load, not a render
+      // cascade.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMessages([]);
       loadedThreadRef.current = null;
       return;
@@ -344,7 +342,7 @@ export default function AgentChatPage() {
         const dbMessages = response.data.reverse().map(apiMessageToUIMessage);
 
         setMessages((prev) => {
-          const merged = [...dbMessages];
+          let merged = [...dbMessages];
 
           // Overlay the background stream's current state (DB may lag behind
           // the stream by a tick for just-yielded messages).
@@ -352,9 +350,18 @@ export default function AgentChatPage() {
           if (snapshot) {
             for (const streamMsg of snapshot.messages) {
               const uiMsg = apiMessageToUIMessage(streamMsg);
+              merged = foldToolResultMessage(merged, uiMsg);
+              // Pending frames from a finished stream are stale.
+              if (uiMsg.pending && snapshot.status !== "active") continue;
               const idx = merged.findLastIndex((m) => m.id === uiMsg.id);
               if (idx < 0) merged.push(uiMsg);
               else merged[idx] = uiMsg;
+            }
+            // A result can already be in the DB while the snapshot still
+            // holds its pending frame (SSE event in flight) — fold the
+            // persisted results too so no orphan spinner survives.
+            for (const m of [...merged]) {
+              merged = foldToolResultMessage(merged, m);
             }
           }
 
@@ -393,21 +400,36 @@ export default function AgentChatPage() {
       setIsSending(next);
     };
 
+    const resetStreamCursor = () => {
+      processedCount = 0;
+      appliedTerminalStatus = null;
+    };
+
     const unsubscribe = subscribeToChatStream(currentThreadId, (snapshot) => {
       if (!snapshot) {
-        processedCount = 0;
-        appliedTerminalStatus = null;
+        resetStreamCursor();
         return;
       }
 
       const { messages: streamMessages } = snapshot;
+      // A new stream in the same thread replaces the finished session and its
+      // message array restarts from empty — resync so its frames render.
+      if (streamMessages.length < processedCount) {
+        resetStreamCursor();
+      }
       if (streamMessages.length > processedCount) {
         const startIdx = processedCount;
         processedCount = streamMessages.length;
         setMessages((prev) => {
           let next = prev;
-          for (let i = startIdx; i < processedCount; i++) {
+          // Bound the loop by this callback's snapshot, not processedCount:
+          // the updater runs deferred, and a later callback may have advanced
+          // processedCount past this (shorter) snapshot's length.
+          for (let i = startIdx; i < streamMessages.length; i++) {
             const uiMsg = apiMessageToUIMessage(streamMessages[i]);
+            // A finished tool call folds its result into the pending frame
+            // that announced it (matched by tool call id).
+            next = foldToolResultMessage(next, uiMsg);
             // Streaming deltas and appends land at the tail, so search from there.
             const idx = next.findLastIndex((m) => m.id === uiMsg.id);
             if (idx < 0) {
@@ -421,6 +443,10 @@ export default function AgentChatPage() {
       }
 
       if (snapshot.status === "active") {
+        // An active snapshot means any terminal status recorded earlier came
+        // from a replaced session (a zero-message session leaves no length
+        // shrink to detect) — clear it so the new session's ending applies.
+        appliedTerminalStatus = null;
         setSending(true);
         return;
       }
@@ -429,6 +455,10 @@ export default function AgentChatPage() {
 
       if (appliedTerminalStatus === snapshot.status) return;
       appliedTerminalStatus = snapshot.status;
+
+      // Whatever ended the stream, calls that never reported a result are
+      // not in the DB either — drop their leftover pending frames.
+      setMessages(dropPendingMessages);
 
       if (snapshot.status === "cancelled") {
         setMessages((prev) => {
@@ -731,7 +761,7 @@ export default function AgentChatPage() {
                 )}
               </h1>
               <p className="text-sm text-muted-foreground line-clamp-1">
-                {agent.description || agent.purpose || "No description"}
+                {agent.description || "No description"}
               </p>
             </div>
           </Link>
@@ -921,7 +951,10 @@ export default function AgentChatPage() {
                 </p>
               </div>
             ) : (
-              messages.map((msg) =>
+              messages.flatMap((msg, index) => {
+                const previousMessage =
+                  index > 0 ? messages[index - 1] : undefined;
+                const messageContent =
                 msg.role === "system" ? (
                   <div
                     key={msg.id}
@@ -999,7 +1032,10 @@ export default function AgentChatPage() {
                     )}
                   >
                     {msg.role === "agent" ? (
-                      <Avatar className="h-8 w-8 border">
+                      <Avatar
+                        className="h-8 w-8 border"
+                        title={formatExactTime(msg.timestamp)}
+                      >
                         {cachedAvatar ? (
                           <AvatarImage src={cachedAvatar} alt={displayName} />
                         ) : null}
@@ -1008,7 +1044,10 @@ export default function AgentChatPage() {
                         </AvatarFallback>
                       </Avatar>
                     ) : (
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-muted">
+                      <div
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border bg-muted"
+                        title={formatExactTime(msg.timestamp)}
+                      >
                         <User className="h-4 w-4" />
                       </div>
                     )}
@@ -1073,7 +1112,20 @@ export default function AgentChatPage() {
                     </div>
                   </div>
                 </React.Fragment>
-                ))
+                );
+                return shouldShowTimeSeparator(
+                  previousMessage?.timestamp,
+                  msg.timestamp,
+                )
+                  ? [
+                      <ChatTimeSeparator
+                        key={`time-${msg.id}`}
+                        date={msg.timestamp}
+                      />,
+                      messageContent,
+                    ]
+                  : messageContent;
+              })
             )}
             {isSending && (
               <div className="flex w-full gap-2 max-w-[85%]">

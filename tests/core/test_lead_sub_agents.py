@@ -1,6 +1,6 @@
 """Tests for lead sub-agents: self-updater, content-manager, and user-manager."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,9 +32,6 @@ async def test_get_self_info_defaults(mock_lead_runtime):
     """Returns default values when no persisted config exists."""
     from intentkit.core.lead.tools.get_self_info import LeadGetSelfInfo
 
-    mock_agent_data = MagicMock()
-    mock_agent_data.long_term_memory = None
-
     tool = LeadGetSelfInfo()
     with (
         patch(
@@ -42,18 +39,17 @@ async def test_get_self_info_defaults(mock_lead_runtime):
             new=AsyncMock(return_value=None),
         ),
         patch(
-            "intentkit.core.lead.tools.get_self_info.AgentData.get",
-            new=AsyncMock(return_value=mock_agent_data),
+            "intentkit.core.lead.tools.get_self_info.load_memory_block",
+            new=AsyncMock(return_value=""),
         ),
     ):
         result = await tool._arun()
 
+    from intentkit.core.lead.constants import LEAD_DEFAULT_PERSONALITY
+
     assert result.name == "Team Lead"
     assert result.avatar is None
-    assert (
-        result.personality is not None
-        and "Helpful team assistant" in result.personality
-    )
+    assert result.personality == LEAD_DEFAULT_PERSONALITY
     assert result.memory is None
 
 
@@ -61,9 +57,6 @@ async def test_get_self_info_defaults(mock_lead_runtime):
 async def test_get_self_info_with_config(mock_lead_runtime):
     """Returns persisted config values when they exist."""
     from intentkit.core.lead.tools.get_self_info import LeadGetSelfInfo
-
-    mock_agent_data = MagicMock()
-    mock_agent_data.long_term_memory = "I remember things"
 
     tool = LeadGetSelfInfo()
     with (
@@ -78,8 +71,8 @@ async def test_get_self_info_with_config(mock_lead_runtime):
             ),
         ),
         patch(
-            "intentkit.core.lead.tools.get_self_info.AgentData.get",
-            new=AsyncMock(return_value=mock_agent_data),
+            "intentkit.core.lead.tools.get_self_info.load_memory_block",
+            new=AsyncMock(return_value="I remember things"),
         ),
     ):
         result = await tool._arun()
@@ -175,28 +168,6 @@ async def test_update_self_name_truncation(mock_lead_runtime):
 
 
 # ──────────────────────────────────────────────
-# LeadUpdateSelfMemory
-# ──────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_update_self_memory(mock_lead_runtime):
-    """Updates lead agent memory via the shared update_memory function."""
-    from intentkit.core.lead.tools.update_self_memory import LeadUpdateSelfMemory
-
-    tool = LeadUpdateSelfMemory()
-    with patch(
-        "intentkit.core.memory.update_memory",
-        new=AsyncMock(return_value="merged memory content"),
-    ) as mock_update:
-        result = await tool._arun(content="New info to remember")
-
-    mock_update.assert_called_once_with("team-test-team", "New info to remember")
-    assert "merged memory content" in result
-    assert "updated successfully" in result
-
-
-# ──────────────────────────────────────────────
 # LeadRecentTeamActivities
 # ──────────────────────────────────────────────
 
@@ -212,7 +183,7 @@ async def test_recent_team_activities_found(mock_lead_runtime):
     mock_activity.id = "act_1"
     mock_activity.agent_name = "Agent One"
     mock_activity.agent_id = "agent-1"
-    mock_activity.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    mock_activity.created_at = datetime(2024, 1, 1, tzinfo=UTC)
     mock_activity.text = "Did something important"
     mock_activity.images = None
     mock_activity.video = None
@@ -259,7 +230,7 @@ async def test_recent_team_activities_with_link(mock_lead_runtime):
     mock_activity.id = "act_2"
     mock_activity.agent_name = "Agent Two"
     mock_activity.agent_id = "agent-2"
-    mock_activity.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    mock_activity.created_at = datetime(2024, 1, 1, tzinfo=UTC)
     mock_activity.text = "Check this link"
     mock_activity.images = ["https://example.com/img.png"]
     mock_activity.video = None
@@ -292,7 +263,7 @@ async def test_recent_team_posts_found(mock_lead_runtime):
     mock_post.id = "post_1"
     mock_post.agent_name = "Agent One"
     mock_post.title = "Great Post"
-    mock_post.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    mock_post.created_at = datetime(2024, 1, 1, tzinfo=UTC)
     mock_post.slug = "great-post"
     mock_post.excerpt = "A summary"
     mock_post.tags = ["tag1", "tag2"]
@@ -339,7 +310,7 @@ async def test_lead_get_post_success(mock_lead_runtime):
     mock_post.id = "post_1"
     mock_post.agent_name = "Agent One"
     mock_post.title = "Test Post"
-    mock_post.created_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    mock_post.created_at = datetime(2024, 1, 1, tzinfo=UTC)
     mock_post.slug = "test-post"
     mock_post.excerpt = "An excerpt"
     mock_post.tags = ["tag1"]
@@ -411,11 +382,9 @@ def test_self_updater_tools():
 
     tools = get_self_updater_tools()
     names = {s.name for s in tools}
-    assert names == {
-        "lead_get_self_info",
-        "lead_update_self",
-        "lead_update_self_memory",
-    }
+    # the lead records its own memory with the general record_memory tool;
+    # the self-updater only edits the profile
+    assert names == {"lead_get_self_info", "lead_update_self"}
 
 
 def test_content_manager_tools():

@@ -66,7 +66,7 @@ async def clear_thread_memory(agent_id: str, chat_id: str) -> bool:
     except Exception as e:
         error_traceback = traceback.format_exc()
         logger.error(
-            f"Failed to clear thread memory for agent_id: {agent_id}, chat_id: {chat_id}. Error: {str(e)}\n{error_traceback}"
+            f"Failed to clear thread memory for agent_id: {agent_id}, chat_id: {chat_id}. Error: {e!s}\n{error_traceback}"
         )
         raise IntentKitAPIError(
             status_code=500, key="ServerError", message="Failed to clear thread memory"
@@ -77,7 +77,7 @@ async def append_agent_message(
     agent_id: str,
     chat_id: str,
     text: str,
-    thread_type: AuthorType = AuthorType.INTERNAL,
+    thread_type: AuthorType,
 ) -> ChatMessage:
     """Append an agent message to both chat_messages and LangGraph checkpoint.
 
@@ -138,24 +138,15 @@ def _get_cached_executor(agent_id: str):
     Does NOT build a new executor — returns None if not found.
     """
     # Check lead executor cache.
-    # Lead inbound messages use raw team_id as agent_id, so check directly.
-    try:
-        from intentkit.core.lead.cache import lead_executors
+    # Lead inbound messages use raw team_id as agent_id; lead executors are
+    # cached per (team, user). Any of the team's executors works here — they
+    # share the DB checkpointer, and appending a message doesn't involve the
+    # per-user toolset.
+    from intentkit.core import caches
 
-        executor = lead_executors.get(agent_id)
-        if executor:
-            return executor
-    except ImportError:
-        pass
+    executor = caches.any_lead_executor(agent_id)
+    if executor:
+        return executor
 
     # Check regular agent executor cache
-    try:
-        from intentkit.core.executor import agents
-
-        executor = agents.get(agent_id)
-        if executor:
-            return executor
-    except ImportError:
-        pass
-
-    return None
+    return caches.agent_executors.get(agent_id)

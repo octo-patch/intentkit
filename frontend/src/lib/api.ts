@@ -5,6 +5,7 @@ import type {
   ChatThread,
 } from "@/types/chat";
 import type { AgentResponse } from "@/types/agent";
+import type { MemorySummary } from "@/types/memory";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
@@ -47,20 +48,6 @@ export const agentApi = {
   },
 
   /**
-   * Get agent schema for form generation
-   */
-  async getSchema(): Promise<Record<string, unknown>> {
-    const response = await fetch(`${API_BASE}/schema/agent`);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch agent schema: ${response.statusText}`);
-    }
-    const schema = await response.json();
-    // Remove $schema field as AJV doesn't support draft-2020-12
-    delete schema.$schema;
-    return schema;
-  },
-
-  /**
    * Create a new agent
    */
   async create(data: Record<string, unknown>): Promise<AgentResponse> {
@@ -94,7 +81,7 @@ export const agentApi = {
   /**
    * Get a single agent by ID with full editable fields
    */
-  async getEditableById(agentId: string): Promise<Record<string, unknown>> {
+  async getEditableById(agentId: string): Promise<AgentResponse> {
     const response = await fetch(`${API_BASE}/agents/${agentId}/editable`);
     if (!response.ok) {
       throw new Error(`Failed to fetch editable agent: ${response.statusText}`);
@@ -214,6 +201,18 @@ export const metadataApi = {
     const response = await fetch(`${API_BASE}/metadata/llms`);
     if (!response.ok) {
       throw new Error(`Failed to fetch LLM models: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  /**
+   * Get the toolset catalog for the agent form's tool picker
+   * GET /metadata/tools
+   */
+  async getToolCatalog(): Promise<Record<string, unknown>> {
+    const response = await fetch(`${API_BASE}/metadata/tools`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch tool catalog: ${response.statusText}`);
     }
     return response.json();
   },
@@ -632,6 +631,102 @@ export const channelApi = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// linkApi — external app accounts (Composio), used by the lead agent
+// ---------------------------------------------------------------------------
+
+export interface TeamLink {
+  id: string;
+  team_id: string;
+  app: string;
+  level: "team" | "user";
+  user_id: string | null; // owning user for user-level links
+  connected_account_id: string;
+  status: string; // active | expired | revoked | ...
+  account_label: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkAppInfo {
+  app: string;
+  name: string;
+  description: string;
+  level: "team" | "user";
+  categories: string[];
+  links: TeamLink[];
+}
+
+export interface TeamLinksResponse {
+  enabled: boolean;
+  categories: string[]; // ordered union of app categories, for filter tags
+  apps: LinkAppInfo[];
+}
+
+export interface LinkCompleteResponse {
+  team_id: string;
+  app: string;
+}
+
+export const linkApi = {
+  async listLinks(): Promise<TeamLinksResponse> {
+    const response = await fetch(`${API_BASE}/lead/links`);
+    if (!response.ok) {
+      throw new Error(`Failed to list links: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  // Start linking an account; returns the Composio auth URL to redirect to.
+  async connectLink(app: string): Promise<{ url: string }> {
+    const response = await fetch(
+      `${API_BASE}/lead/links/${encodeURIComponent(app)}/connect`,
+      { method: "POST" },
+    );
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.message || `Failed to start linking: ${response.statusText}`,
+      );
+    }
+    return response.json();
+  },
+
+  async deleteLink(linkId: string): Promise<void> {
+    const response = await fetch(
+      `${API_BASE}/lead/links/${encodeURIComponent(linkId)}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.message || `Failed to unlink: ${response.statusText}`,
+      );
+    }
+  },
+
+  // Finish a link attempt: the OAuth landing page relays the
+  // connected_account_id from Composio's callback redirect; the backend
+  // verifies the account status against Composio directly.
+  async completeLink(
+    connectedAccountId: string,
+  ): Promise<LinkCompleteResponse> {
+    const response = await fetch(`${API_BASE}/lead/links/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ connected_account_id: connectedAccountId }),
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.message || `Failed to complete link: ${response.statusText}`,
+      );
+    }
+    return response.json();
+  },
+};
+
 export const leadApi = {
   async getInfo(): Promise<AgentResponse> {
     const response = await fetch(`${API_BASE}/lead/info`);
@@ -1028,7 +1123,6 @@ export interface AutonomousTask {
   cron?: string;
   prompt: string;
   enabled: boolean;
-  has_memory: boolean;
   status?: string;
   next_run_time?: string;
   chat_id: string;
@@ -1214,5 +1308,105 @@ export const autonomousApi = {
         `Failed to delete autonomous task: ${response.statusText}`,
       );
     }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Crypto Wallets (owned by the local system team)
+// ---------------------------------------------------------------------------
+
+export interface TeamWallet {
+  id: string;
+  team_id: string;
+  name: string;
+  wallet_provider: string; // cdp | native | readonly | safe | privy
+  default_network_id: string | null;
+  evm_wallet_address: string | null;
+  solana_wallet_address: string | null;
+  weekly_spending_limit: number | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WalletCreateRequest {
+  name: string;
+  wallet_provider: string;
+  default_network_id?: string | null;
+  readonly_address?: string | null;
+  weekly_spending_limit?: number | null;
+}
+
+export interface WalletUpdateRequest {
+  name?: string;
+  default_network_id?: string;
+}
+
+export const walletApi = {
+  async listWallets(): Promise<TeamWallet[]> {
+    const response = await fetch(`${API_BASE}/wallets`);
+    if (!response.ok) {
+      throw new Error(`Failed to list wallets: ${response.statusText}`);
+    }
+    return response.json();
+  },
+
+  async createWallet(body: WalletCreateRequest): Promise<TeamWallet> {
+    const response = await fetch(`${API_BASE}/wallets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.msg || errorData.message || `Failed to create wallet: ${response.statusText}`,
+      );
+    }
+    return response.json();
+  },
+
+  async updateWallet(
+    walletId: string,
+    body: WalletUpdateRequest,
+  ): Promise<TeamWallet> {
+    const response = await fetch(`${API_BASE}/wallets/${walletId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.msg || errorData.message || `Failed to update wallet: ${response.statusText}`,
+      );
+    }
+    return response.json();
+  },
+
+  async deleteWallet(walletId: string): Promise<void> {
+    const response = await fetch(`${API_BASE}/wallets/${walletId}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(
+        errorData.msg || errorData.message || `Failed to delete wallet: ${response.statusText}`,
+      );
+    }
+  },
+};
+
+/**
+ * Memory API functions — read-only: memory reaches agents only through
+ * their own record_memory tool, never from the web.
+ */
+export const memoryApi = {
+  async list(): Promise<MemorySummary[]> {
+    const response = await fetch(`${API_BASE}/memories`);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch memories: ${response.statusText}`);
+    }
+    return response.json();
   },
 };

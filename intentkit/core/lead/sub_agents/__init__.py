@@ -5,13 +5,20 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
 from intentkit.abstracts.graph import AgentContext, AgentState
+
+# Sub-agent cache storage lives in core.caches so the lead cache sweep can evict
+# these entries without importing this package (that closed an import cycle).
+from intentkit.core.caches import sub_agents as _sub_agents
+from intentkit.core.caches import sub_cache_key as _cache_key
+from intentkit.core.caches import sub_cached_at as _sub_cached_at
+from intentkit.core.caches import sub_executors as _sub_executors
 from intentkit.core.executor import build_executor
 from intentkit.models.agent import Agent
 from intentkit.models.agent_data import AgentData
@@ -36,16 +43,6 @@ class SubAgentDefinition:
     tools_fn: Callable[[], Sequence[BaseTool]]  # () -> tools list
 
 
-# Caches keyed by "team_id:slug"
-_sub_executors: dict[str, CompiledStateGraph[AgentState, AgentContext, Any, Any]] = {}
-_sub_agents: dict[str, Agent] = {}
-_sub_cached_at: dict[str, datetime] = {}
-
-
-def _cache_key(team_id: str, slug: str) -> str:
-    return f"{team_id}:{slug}"
-
-
 async def get_sub_agent_executor(
     team_id: str, slug: str
 ) -> tuple[CompiledStateGraph[AgentState, AgentContext, Any, Any], Agent]:
@@ -56,7 +53,7 @@ async def get_sub_agent_executor(
     agent = _sub_agents.get(key)
 
     if executor and agent:
-        _sub_cached_at[key] = datetime.now(timezone.utc)
+        _sub_cached_at[key] = datetime.now(UTC)
         return executor, agent
 
     definition = SUB_AGENT_REGISTRY[slug]
@@ -71,7 +68,7 @@ async def get_sub_agent_executor(
 
     _sub_executors[key] = executor
     _sub_agents[key] = agent
-    _sub_cached_at[key] = datetime.now(timezone.utc)
+    _sub_cached_at[key] = datetime.now(UTC)
     logger.info("Built sub-agent executor %s for team %s", slug, team_id)
 
     return executor, agent
@@ -84,16 +81,6 @@ def invalidate_sub_agent_caches(team_id: str) -> None:
         _sub_executors.pop(key, None)
         _sub_agents.pop(key, None)
         _sub_cached_at.pop(key, None)
-
-
-def cleanup_sub_agent_caches(expired_before: datetime) -> None:
-    """Evict expired sub-agent cache entries."""
-    for key, cached_time in list(_sub_cached_at.items()):
-        if cached_time < expired_before:
-            _sub_executors.pop(key, None)
-            _sub_agents.pop(key, None)
-            _sub_cached_at.pop(key, None)
-            logger.debug("Removed expired sub-agent executor %s", key)
 
 
 # Registry populated after imports to avoid circular deps
@@ -140,9 +127,7 @@ SUB_AGENT_REGISTRY: dict[str, SubAgentDefinition] = {
     ),
     SLUG_SELF_UPDATER: SubAgentDefinition(
         slug=SLUG_SELF_UPDATER,
-        description=(
-            "Updates the lead agent itself: name, avatar, personality, and memory."
-        ),
+        description=("Updates the lead agent itself: name, avatar, and personality."),
         build_fn=build_self_updater,
         tools_fn=get_self_updater_tools,
     ),

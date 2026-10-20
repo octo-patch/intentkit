@@ -5,6 +5,7 @@ from langchain_core.tools import ArgsSchema
 from langchain_core.tools.base import ToolException
 from pydantic import BaseModel, Field
 
+from intentkit.models.wallet import DEFAULT_NETWORK_ID
 from intentkit.tools.enso.base import EnsoBaseTool, base_url
 
 
@@ -17,7 +18,7 @@ class EnsoGetBestYieldInput(BaseModel):
     )
     chain_id: int | None = Field(
         None,
-        description="Chain ID (defaults to agent network)",
+        description="Chain ID (defaults to Base mainnet)",
     )
     top_n: int = Field(
         5,
@@ -57,6 +58,7 @@ class EnsoGetBestYield(EnsoBaseTool):
     """
 
     name: str = "enso_get_best_yield"
+    title: str = "Get Best Yield"
     description: str = (
         "Find best yield options for a token across DeFi protocols, sorted by APY."
     )
@@ -74,7 +76,7 @@ class EnsoGetBestYield(EnsoBaseTool):
 
         Args:
             token_symbol (str): Symbol of the token to find the best yield for (default: USDC)
-            chain_id (int | None): The chain id of the network. Defaults to the agent's configured network.
+            chain_id (int | None): The chain id of the network. Defaults to Base mainnet.
             top_n (int): Number of top yield options to return
 
         Returns:
@@ -84,7 +86,7 @@ class EnsoGetBestYield(EnsoBaseTool):
             ToolException: If there's an error accessing the Enso API.
         """
         context = self.get_context()
-        resolved_chain_id = self.resolve_chain_id(context, chain_id)
+        resolved_chain_id = self.resolve_chain_id(chain_id, DEFAULT_NETWORK_ID)
         api_token = self.get_api_token(context)
 
         if not api_token:

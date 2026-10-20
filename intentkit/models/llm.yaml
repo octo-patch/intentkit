@@ -5,19 +5,49 @@
 #
 # Field notes:
 #   prices            USD per 1M tokens; quoted as strings to keep exact Decimal precision.
+#   id                stable series id, no version number (e.g. "gemini-flash",
+#                     "openai/gpt-luna"). Agents store this id, so a version
+#                     bump never touches agent config; put the version in name.
+#   api_id            the model id actually sent to the provider; defaults to id.
+#                     OpenRouter rows use the "~<author>/<family>-latest" alias
+#                     when OpenRouter has one: it re-points on every release, so
+#                     a bump there is a name change plus a price check. Rows
+#                     without an alias pin the versioned id and are bumped by
+#                     hand. api_id is indexed like id, so agents storing the
+#                     versioned id keep resolving without a legacy_ids entry.
 #   provider          which integration serves the model (see LLMProvider).
 #   origin_provider   OpenRouter-only. Pins the upstream provider on OpenRouter via
 #                     {"order": [origin_provider], "allow_fallbacks": false}.
+#                     Pin the bare provider slug, not a quant-suffixed tag: the
+#                     pin matches endpoint tags by prefix and survives quant swaps.
 #                     Omit to let OpenRouter pick the upstream provider.
-#   reasoning_effort  "xhigh"/"high"/"medium"/"low"/"minimal"/"none" or null.
-#   thinking_modes    provider-supported thinking controls; default_thinking_mode is
-#                     the default used by this catalog entry's adapter.
+#   legacy_ids        Retired ids this model supersedes (the versioned ids agents
+#                     stored before ids became series ids, plus older series).
+#                     Agents still storing one are routed here at resolve time;
+#                     never reuse a legacy id for a live model. When retiring a
+#                     series, move its id (and its own legacy_ids) onto the
+#                     successor entry.
+#   reasoning_effort  Default reasoning/thinking effort when the agent doesn't
+#                     set one. Uses OpenRouter's unified scale:
+#                     "max"/"xhigh"/"high"/"medium"/"low"/"minimal"/"none" or null.
+#   reasoning_levels  Efforts this model actually supports (same scale, per the
+#                     provider's official docs). Agent requests are clamped to
+#                     the nearest member: omit "none" for models whose reasoning
+#                     cannot be disabled; single-member lists mean no control.
 #   intelligence/speed/price_level  1-5 ratings.
+#   compress_cold/compress_warm/compress_hot
+#                     Optional per-model history-compression thresholds in tokens.
+#                     Which one applies depends on how long ago the previous LLM
+#                     request happened: hot within 1 hour, warm within 1 day,
+#                     cold beyond that. Omit for the defaults: cold 20000,
+#                     warm 50% of context_length, hot 80% of context_length.
 
 
-- id: "google/gemma-4-31b-it:free"
+- id: "google/gemma:free"
+  api_id: "google/gemma-4-31b-it:free"
   name: "Gemma 4 31B (Free)"
   provider: openrouter
+  origin_provider: "google-ai-studio"   # lock OpenRouter upstream
   enabled: true
   input_price: "0"
   cached_input_price: null
@@ -32,9 +62,7 @@
   supports_video_input: true
   supports_file_input: false
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_levels: ["minimal", "high"]
   timeout: 300
 
 - id: "openrouter/free"
@@ -54,65 +82,89 @@
   supports_video_input: false
   supports_file_input: false
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_levels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
   timeout: 300
 
-- id: "qwen/qwen3.7-max"
-  name: "Qwen3.7 Max"
+# OpenRouter has no Qwen "latest" alias, so api_id pins the dated snapshot
+# (OpenRouter delisted the undated qwen3.8-max on 2026-09-04).
+- id: "qwen/qwen-max"
+  api_id: "qwen/qwen3.8-max-0902"
+  name: "Qwen3.8 Max"
   provider: openrouter
+  origin_provider: "alibaba"   # lock OpenRouter upstream
+  legacy_ids: ["qwen/qwen3.8-max", "qwen/qwen3.7-max"]
   enabled: true
-  input_price: "2.5"
-  cached_input_price: "0.5"
-  output_price: "7.5"
-  price_level: 4
+  input_price: "2"
+  cached_input_price: "0.25"
+  output_price: "6"
+  price_level: 3
   context_length: 1000000
-  output_length: 65536
+  output_length: 131072
   intelligence: 5
   speed: 3
-  supports_image_input: false
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "qwen/qwen3.6-plus"
-  name: "Qwen3.6 Plus"
-  provider: openrouter
-  enabled: true
-  input_price: "0.325"
-  cached_input_price: null
-  output_price: "1.95"
-  price_level: 2
-  context_length: 1000000
-  output_length: 65536
-  intelligence: 4
-  speed: 4
   supports_image_input: true
   supports_audio_input: false
   supports_video_input: true
   supports_file_input: false
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_levels: ["none", "high"]
   timeout: 300
 
-- id: "minimax/minimax-m3"
+- id: "qwen/qwen-plus"
+  api_id: "qwen/qwen3.7-plus"
+  name: "Qwen3.7 Plus"
+  provider: openrouter
+  origin_provider: "alibaba"   # lock OpenRouter upstream
+  legacy_ids: ["qwen/qwen3.6-plus"]
+  enabled: true
+  input_price: "0.32"
+  cached_input_price: "0.064"
+  output_price: "1.28"
+  price_level: 2
+  context_length: 1000000
+  output_length: 131072
+  intelligence: 4
+  speed: 4
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: false
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "high"]
+  timeout: 300
+
+# Gateway metadata follows OpenRouter's Minimax endpoint, not direct API prices.
+# https://openrouter.ai/api/v1/models/minimax/minimax-m3.1-flash:free/endpoints
+- id: "minimax/minimax-flash:free"
+  api_id: "minimax/minimax-m3.1-flash:free"
+  name: "MiniMax M3.1 Flash (free)"
+  provider: openrouter
+  origin_provider: "minimax"
+  enabled: true
+  input_price: "0"
+  output_price: "0"
+  price_level: 1
+  context_length: 1000000
+  output_length: 524288
+  intelligence: 5
+  speed: 4
+  supports_image_input: true
+  supports_video_input: true
+  reasoning_effort: "max"
+  reasoning_levels: ["low", "medium", "high", "xhigh", "max"]
+  timeout: 300
+
+- id: "minimax/minimax"
+  api_id: "minimax/minimax-m3"
   name: "MiniMax M3"
   provider: openrouter
   origin_provider: "minimax/fp8"   # lock OpenRouter upstream
   enabled: true
-  input_price: "0.6"
-  cached_input_price: "0.12"
-  output_price: "2.4"
+  input_price: "0.3"
+  cached_input_price: "0.06"
+  output_price: "1.2"
   price_level: 2
-  context_length: 1000000
+  context_length: 524288
   output_length: 512000
   intelligence: 5
   speed: 3
@@ -121,43 +173,19 @@
   supports_video_input: true
   supports_file_input: false
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_levels: ["none", "high"]
   timeout: 300
 
-- id: "minimax/minimax-m2-her"
-  name: "Minimax M2 Her"
-  provider: openrouter
-  origin_provider: "minimax/fp8"   # lock OpenRouter upstream
-  enabled: true
-  input_price: "0.3"
-  cached_input_price: "0.03"
-  output_price: "1.2"
-  price_level: 2
-  context_length: 65536
-  output_length: 2048
-  intelligence: 3
-  speed: 3
-  supports_image_input: false
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "xiaomi/mimo-v2.5-pro"
+- id: "xiaomi/mimo-pro"
+  api_id: "xiaomi/mimo-v2.5-pro"
   name: "MiMo V2.5 Pro"
   provider: openrouter
   origin_provider: "xiaomi/fp8"   # lock OpenRouter upstream
   enabled: true
-  input_price: "1"
-  cached_input_price: "0.2"
-  output_price: "3"
-  price_level: 3
+  input_price: "0.435"
+  cached_input_price: "0.0036"
+  output_price: "0.87"
+  price_level: 2
   context_length: 1048576
   output_length: 131072
   intelligence: 5
@@ -167,599 +195,42 @@
   supports_video_input: false
   supports_file_input: false
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_levels: ["none", "high"]
   timeout: 300
 
-- id: "xiaomi/mimo-v2.5"
+- id: "xiaomi/mimo"
+  api_id: "xiaomi/mimo-v2.5"
   name: "MiMo V2.5"
   provider: openrouter
   origin_provider: "xiaomi/fp8"   # lock OpenRouter upstream
-  enabled: true
-  input_price: "0.4"
-  cached_input_price: "0.08"
-  output_price: "2"
-  price_level: 2
-  context_length: 1048576
-  output_length: 131072
-  intelligence: 4
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "mimo-v2.5-pro"
-  name: "MiMo V2.5 Pro"
-  provider: mimo_plan
-  enabled: true
-  input_price: "1"
-  cached_input_price: "0.2"
-  output_price: "3"
-  price_level: 3
-  context_length: 1048576
-  output_length: 131072
-  intelligence: 5
-  speed: 2
-  supports_image_input: false
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "mimo-v2.5"
-  name: "MiMo V2.5"
-  provider: mimo_plan
-  enabled: true
-  input_price: "0.4"
-  cached_input_price: "0.08"
-  output_price: "2"
-  price_level: 2
-  context_length: 1048576
-  output_length: 131072
-  intelligence: 4
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "moonshotai/kimi-k2.6"
-  name: "Moonshot Kimi K2.6"
-  provider: openrouter
-  origin_provider: "moonshotai/int4"   # lock OpenRouter upstream
-  enabled: true
-  input_price: "0.95"
-  cached_input_price: "0.16"
-  output_price: "4"
-  price_level: 2
-  context_length: 256000
-  output_length: 65536
-  intelligence: 4
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "moonshotai/kimi-k2.7-code"
-  name: "Moonshot Kimi K2.7 Code"
-  provider: openrouter
-  origin_provider: "moonshotai/int4"   # lock OpenRouter upstream
-  enabled: true
-  input_price: "0.95"
-  cached_input_price: "0.16"
-  output_price: "4"
-  price_level: 2
-  context_length: 262144
-  output_length: 65536
-  intelligence: 4
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "qwen/qwen3.6-flash"
-  name: "Qwen3.6 Flash"
-  provider: openrouter
-  enabled: true
-  input_price: "0.25"
-  cached_input_price: null
-  output_price: "1.5"
-  price_level: 2
-  context_length: 1000000
-  output_length: 65536
-  intelligence: 4
-  speed: 5
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: true
-  supports_file_input: false
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "z-ai/glm-4.7-flash"
-  name: "GLM 4.7 Flash"
-  provider: openrouter
-  enabled: true
-  input_price: "0.06"
-  cached_input_price: "0.01"
-  output_price: "0.4"
-  price_level: 1
-  context_length: 202752
-  output_length: 131072
-  intelligence: 3
-  speed: 5
-  supports_image_input: false
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "z-ai/glm-5.1"
-  name: "GLM 5.1"
-  provider: openrouter
-  enabled: true
-  input_price: "1.26"
-  cached_input_price: null
-  output_price: "3.96"
-  price_level: 3
-  context_length: 202752
-  output_length: 131072
-  intelligence: 5
-  speed: 2
-  supports_image_input: false
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "anthropic/claude-sonnet-4.6"
-  name: "Claude Sonnet 4.6"
-  provider: openrouter
-  origin_provider: "anthropic"   # lock OpenRouter upstream
-  enabled: true
-  input_price: "3"
-  cached_input_price: "0.3"
-  output_price: "15"
-  price_level: 4
-  context_length: 200000
-  output_length: 8192
-  intelligence: 5
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "anthropic/claude-opus-4.8"
-  name: "Claude Opus 4.8"
-  provider: openrouter
-  origin_provider: "anthropic"   # lock OpenRouter upstream
-  enabled: true
-  input_price: "5"
-  cached_input_price: "0.5"
-  output_price: "25"
-  price_level: 5
-  context_length: 1000000
-  output_length: 8192
-  intelligence: 5
-  speed: 2
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "gemini-3-flash-preview"
-  name: "Gemini 3 Flash"
-  provider: google
-  enabled: true
-  input_price: "0.5"
-  cached_input_price: "0.05"
-  output_price: "3"
-  price_level: 2
-  context_length: 1048576
-  output_length: 65536
-  intelligence: 4
-  speed: 5
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: true
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 300
-
-- id: "google/gemini-3-flash-preview"
-  name: "Gemini 3 Flash"
-  provider: openrouter
-  enabled: true
-  input_price: "0.5"
-  cached_input_price: "0.05"
-  output_price: "3"
-  price_level: 2
-  context_length: 1048576
-  output_length: 65536
-  intelligence: 4
-  speed: 5
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: true
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "gemini-3.1-pro-preview-customtools"
-  name: "Gemini 3.1 Pro"
-  provider: google
-  enabled: true
-  input_price: "2"
-  cached_input_price: "0.2"
-  output_price: "12"
-  price_level: 4
-  context_length: 1048576
-  output_length: 65536
-  intelligence: 5
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: true
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 300
-
-- id: "google/gemini-3.1-pro-preview-customtools"
-  name: "Gemini 3.1 Pro"
-  provider: openrouter
-  enabled: true
-  input_price: "2"
-  cached_input_price: "0.2"
-  output_price: "12"
-  price_level: 4
-  context_length: 1048576
-  output_length: 65536
-  intelligence: 5
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: true
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "gemini-3.1-flash-lite-preview"
-  name: "Gemini 3.1 Flash Lite"
-  provider: google
-  enabled: true
-  input_price: "0.25"
-  cached_input_price: "0.025"
-  output_price: "1.5"
-  price_level: 2
-  context_length: 1048576
-  output_length: 65536
-  intelligence: 3
-  speed: 5
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: true
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 300
-
-- id: "google/gemini-3.1-flash-lite-preview"
-  name: "Gemini 3.1 Flash Lite"
-  provider: openrouter
-  enabled: true
-  input_price: "0.25"
-  cached_input_price: "0.025"
-  output_price: "1.5"
-  price_level: 2
-  context_length: 1048576
-  output_length: 65536
-  intelligence: 3
-  speed: 5
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: true
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "gemini-3.5-flash"
-  name: "Gemini 3.5 Flash"
-  provider: google
-  enabled: true
-  input_price: "1.5"
-  cached_input_price: "0.15"
-  output_price: "9"
-  price_level: 3
-  context_length: 1048576
-  output_length: 65536
-  intelligence: 5
-  speed: 4
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: true
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 300
-
-- id: "google/gemini-3.5-flash"
-  name: "Gemini 3.5 Flash"
-  provider: openrouter
-  enabled: true
-  input_price: "1.5"
-  cached_input_price: "0.15"
-  output_price: "9"
-  price_level: 3
-  context_length: 1048576
-  output_length: 65536
-  intelligence: 5
-  speed: 4
-  supports_image_input: true
-  supports_audio_input: true
-  supports_video_input: true
-  supports_file_input: true
-  reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "gpt-5.4"
-  name: "GPT-5.4"
-  provider: openai
-  enabled: true
-  input_price: "2.5"
-  cached_input_price: "0.25"
-  output_price: "15"
-  price_level: 4
-  context_length: 272000
-  output_length: 128000
-  intelligence: 5
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: true
-  reasoning_effort: "high"
-  supports_temperature: false
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 180
-
-- id: "openai/gpt-5.4"
-  name: "GPT-5.4"
-  provider: openrouter
-  enabled: true
-  input_price: "2.5"
-  cached_input_price: "0.25"
-  output_price: "15"
-  price_level: 4
-  context_length: 272000
-  output_length: 128000
-  intelligence: 5
-  speed: 3
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: true
-  reasoning_effort: "high"
-  supports_temperature: false
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 180
-
-- id: "gpt-5.4-nano"
-  name: "GPT-5.4 Nano"
-  provider: openai
-  enabled: true
-  input_price: "0.1"
-  cached_input_price: "0.01"
-  output_price: "0.625"
-  price_level: 1
-  context_length: 400000
-  output_length: 128000
-  intelligence: 3
-  speed: 5
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: true
-  reasoning_effort: "minimal"
-  supports_temperature: false
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 180
-
-- id: "openai/gpt-5.4-nano"
-  name: "GPT-5.4 Nano"
-  provider: openrouter
-  enabled: true
-  input_price: "0.1"
-  cached_input_price: "0.01"
-  output_price: "0.625"
-  price_level: 1
-  context_length: 400000
-  output_length: 128000
-  intelligence: 3
-  speed: 5
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: true
-  reasoning_effort: "minimal"
-  supports_temperature: false
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 180
-
-- id: "gpt-5.4-mini"
-  name: "GPT-5.4 Mini"
-  provider: openai
-  enabled: true
-  input_price: "0.375"
-  cached_input_price: "0.0375"
-  output_price: "2.25"
-  price_level: 2
-  context_length: 400000
-  output_length: 128000
-  intelligence: 4
-  speed: 4
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: true
-  reasoning_effort: "minimal"
-  supports_temperature: false
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 180
-
-- id: "openai/gpt-5.4-mini"
-  name: "GPT-5.4 Mini"
-  provider: openrouter
-  enabled: true
-  input_price: "0.375"
-  cached_input_price: "0.0375"
-  output_price: "2.25"
-  price_level: 2
-  context_length: 400000
-  output_length: 128000
-  intelligence: 4
-  speed: 4
-  supports_image_input: true
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: true
-  reasoning_effort: "minimal"
-  supports_temperature: false
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 180
-
-- id: "deepseek-v4-flash"
-  name: "Deepseek V4 Flash"
-  provider: deepseek
   enabled: true
   input_price: "0.14"
   cached_input_price: "0.0028"
   output_price: "0.28"
   price_level: 1
   context_length: 1048576
-  output_length: 32000
+  output_length: 131072
   intelligence: 4
-  speed: 4
-  supports_image_input: false
-  supports_audio_input: false
-  supports_video_input: false
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
   supports_file_input: false
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "high"]
   timeout: 300
 
-- id: "deepseek/deepseek-v4-flash"
-  name: "Deepseek V4 Flash"
-  provider: openrouter
-  origin_provider: "deepseek"   # lock OpenRouter upstream
-  enabled: true
-  input_price: "0.14"
-  cached_input_price: "0.028"
-  output_price: "0.28"
-  price_level: 1
-  context_length: 1048576
-  output_length: 32000
-  intelligence: 4
-  speed: 4
-  supports_image_input: false
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 300
-
-- id: "deepseek-v4-pro"
-  name: "Deepseek V4 Pro"
-  provider: deepseek
+- id: "mimo-pro"
+  api_id: "mimo-v2.5-pro"
+  name: "MiMo V2.5 Pro"
+  provider: mimo_plan
   enabled: true
   input_price: "0.435"
-  cached_input_price: "0.003625"
+  cached_input_price: "0.0036"
   output_price: "0.87"
   price_level: 2
   context_length: 1048576
-  output_length: 64000
+  output_length: 131072
   intelligence: 5
   speed: 2
   supports_image_input: false
@@ -767,22 +238,577 @@
   supports_video_input: false
   supports_file_input: false
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_levels: ["none", "high"]
   timeout: 300
 
-- id: "deepseek/deepseek-v4-pro"
+- id: "mimo"
+  api_id: "mimo-v2.5"
+  name: "MiMo V2.5"
+  provider: mimo_plan
+  enabled: true
+  input_price: "0.14"
+  cached_input_price: "0.0028"
+  output_price: "0.28"
+  price_level: 1
+  context_length: 1048576
+  output_length: 131072
+  intelligence: 4
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
+  supports_file_input: false
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "high"]
+  timeout: 300
+
+# Meta's contributor tier: prompts and completions may be used to train
+# future Meta models, in exchange for a steep discount off the standard
+# "meta/muse-spark-1.3" (1.25/0.15/4.25). Meta rate-limits it to 100 rpm, and
+# OpenRouter gates it behind the account's "18+ age confirmation" attestation
+# (openrouter.ai/settings/preferences) — requests 403 until that is ticked.
+# Reasoning is always on; "max" is only accepted on the standard tier.
+- id: "meta/muse-spark-contributor"
+  api_id: "meta/muse-spark-1.3-contributor"
+  name: "Muse Spark 1.3 (Contributor)"
+  provider: openrouter
+  origin_provider: "meta"   # lock OpenRouter upstream
+  enabled: true
+  input_price: "0.1"
+  cached_input_price: "0.002"
+  output_price: "0.2"
+  price_level: 1
+  context_length: 1048576
+  output_length: 131072
+  intelligence: 5
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["minimal", "low", "medium", "high", "xhigh"]
+  timeout: 300
+
+# Reasoning is always on for K3 and "max" is the only effort Moonshot
+# currently accepts ("more levels coming soon" per their API docs).
+- id: "moonshotai/kimi"
+  api_id: "~moonshotai/kimi-latest"
+  name: "Moonshot Kimi K3"
+  provider: openrouter
+  # No quantization pin: Moonshot retired its int4 endpoint for mxfp4, and a
+  # stale quant slug with allow_fallbacks=false would fail to route at all.
+  origin_provider: "moonshotai"   # lock OpenRouter upstream
+  legacy_ids: ["moonshotai/kimi-k2.6", "moonshotai/kimi-k2.7-code", "moonshotai/kimi-k3"]
+  enabled: true
+  input_price: "3"
+  cached_input_price: "0.3"
+  output_price: "15"
+  price_level: 4
+  context_length: 1048576
+  output_length: 131072
+  intelligence: 5
+  speed: 2
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: false
+  reasoning_effort: "max"
+  reasoning_levels: ["max"]
+  timeout: 300
+
+- id: "qwen/qwen-flash"
+  api_id: "qwen/qwen3.8-flash"
+  name: "Qwen3.8 Flash"
+  provider: openrouter
+  origin_provider: "alibaba"   # lock OpenRouter upstream
+  legacy_ids: ["qwen/qwen3.7-flash", "qwen/qwen3.6-flash"]
+  enabled: true
+  input_price: "0.15"
+  cached_input_price: "0.016"
+  output_price: "0.47"
+  price_level: 1
+  context_length: 1000000
+  output_length: 131072
+  intelligence: 4
+  speed: 5
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: true
+  supports_file_input: false
+  reasoning_effort: "none"
+  reasoning_levels: ["none", "high"]
+  timeout: 300
+
+# Z.AI's 50% launch discount ended; the first-party endpoint bills list
+# price again (as of 2026-09-16).
+- id: "z-ai/glm-flash"
+  api_id: "~z-ai/glm-flash-latest"
+  name: "GLM 5.3 Flash"
+  provider: openrouter
+  origin_provider: "z-ai"   # lock OpenRouter upstream
+  legacy_ids: ["z-ai/glm-4.7-flash", "z-ai/glm-5.3-flash"]
+  enabled: true
+  input_price: "0.15"
+  cached_input_price: "0.03"
+  output_price: "0.5"
+  price_level: 1
+  context_length: 1048576
+  output_length: 131072
+  intelligence: 4
+  speed: 4
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: true
+  supports_file_input: false
+  # Thinking cannot be disabled (see z-ai/glm below); "low" keeps latency
+  # and cost sane for the lite-model role.
+  reasoning_effort: "low"
+  reasoning_levels: ["low", "high", "max"]
+  timeout: 300
+
+- id: "z-ai/glm"
+  api_id: "~z-ai/glm-latest"
+  name: "GLM 5.3"
+  provider: openrouter
+  # Bare slug: it matches Z.ai's quant-suffixed endpoint (z-ai/fp8 today) and
+  # keeps working if they swap quantization, as Moonshot did for K3.
+  origin_provider: "z-ai"   # lock OpenRouter upstream
+  legacy_ids: ["z-ai/glm-5.1", "z-ai/glm-5.2", "z-ai/glm-5.3"]
+  enabled: true
+  input_price: "1.4"
+  cached_input_price: "0.26"
+  output_price: "4.4"
+  price_level: 3
+  context_length: 1048576
+  output_length: 131072
+  intelligence: 5
+  speed: 2
+  supports_image_input: false
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: false
+  # Z.ai dropped thinking.type=disabled in 5.3; only low/high/max remain.
+  reasoning_effort: "high"
+  reasoning_levels: ["low", "high", "max"]
+  timeout: 300
+
+- id: "anthropic/claude-sonnet"
+  api_id: "~anthropic/claude-sonnet-latest"
+  name: "Claude Sonnet 5"
+  provider: openrouter
+  origin_provider: "anthropic"   # lock OpenRouter upstream
+  legacy_ids: ["anthropic/claude-sonnet-4.6", "anthropic/claude-sonnet-5"]
+  enabled: true
+  input_price: "2"
+  cached_input_price: "0.2"
+  output_price: "10"
+  price_level: 3
+  context_length: 1000000
+  output_length: 128000
+  intelligence: 5
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "low", "medium", "high", "xhigh", "max"]
+  timeout: 300
+
+- id: "anthropic/claude-opus"
+  api_id: "~anthropic/claude-opus-latest"
+  name: "Claude Opus 5"
+  provider: openrouter
+  origin_provider: "anthropic"   # lock OpenRouter upstream
+  legacy_ids: ["anthropic/claude-opus-4.8", "anthropic/claude-opus-5"]
+  enabled: true
+  input_price: "5"
+  cached_input_price: "0.5"
+  output_price: "25"
+  price_level: 5
+  context_length: 1000000
+  output_length: 128000
+  intelligence: 5
+  speed: 2
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "low", "medium", "high", "xhigh", "max"]
+  timeout: 300
+
+# GA id "gemini-3.1-pro" 404s on Vertex express mode (as of 2026-07);
+# the customtools preview alias still serves. Google has no "-latest" alias
+# on Vertex express either, so Google rows all pin versioned ids.
+- id: "gemini-pro"
+  api_id: "gemini-3.1-pro-preview-customtools"
+  name: "Gemini 3.1 Pro"
+  provider: google
+  enabled: true
+  input_price: "2"
+  cached_input_price: "0.2"
+  output_price: "12"
+  price_level: 4
+  context_length: 1048576
+  output_length: 65536
+  intelligence: 5
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["low", "medium", "high"]
+  timeout: 300
+
+- id: "google/gemini-pro"
+  api_id: "google/gemini-3.1-pro-preview-customtools"
+  name: "Gemini 3.1 Pro"
+  provider: openrouter
+  # The customtools alias has no Vertex endpoint on OpenRouter (as of 2026-08).
+  # Kept explicit: "~google/gemini-pro-latest" resolves to the plain preview.
+  origin_provider: "google-ai-studio"   # lock OpenRouter upstream
+  enabled: true
+  input_price: "2"
+  cached_input_price: "0.2"
+  output_price: "12"
+  price_level: 4
+  context_length: 1048576
+  output_length: 65536
+  intelligence: 5
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["low", "medium", "high"]
+  timeout: 300
+
+- id: "gemini-flash-lite"
+  api_id: "gemini-3.5-flash-lite"
+  name: "Gemini 3.5 Flash Lite"
+  provider: google
+  legacy_ids: ["gemini-3.1-flash-lite-preview", "gemini-3.1-flash-lite"]
+  enabled: true
+  input_price: "0.3"
+  cached_input_price: "0.03"
+  output_price: "2.5"
+  price_level: 2
+  context_length: 1048576
+  output_length: 65536
+  intelligence: 3
+  speed: 5
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["minimal", "low", "medium", "high"]
+  timeout: 300
+
+- id: "google/gemini-flash-lite"
+  api_id: "google/gemini-3.5-flash-lite"
+  name: "Gemini 3.5 Flash Lite"
+  provider: openrouter
+  # Vertex and AI Studio bill the same here; Vertex for parity with 3.8 Flash.
+  origin_provider: "google-vertex/global"   # lock OpenRouter upstream
+  legacy_ids: ["google/gemini-3.1-flash-lite-preview", "google/gemini-3.1-flash-lite"]
+  enabled: true
+  input_price: "0.3"
+  cached_input_price: "0.03"
+  output_price: "2.5"
+  price_level: 2
+  context_length: 1048576
+  output_length: 65536
+  intelligence: 3
+  speed: 5
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["minimal", "low", "medium", "high"]
+  timeout: 300
+
+# Google prices 3.8 Flash at the same introductory rate as 3.7 through
+# 2026-12-31 (1.5/0.15/7.5 from 2027-01-01). Thinking levels stay
+# low/medium/high: "minimal" is rejected and thinking cannot be disabled.
+- id: "gemini-flash"
+  api_id: "gemini-3.8-flash"
+  name: "Gemini 3.8 Flash"
+  provider: google
+  legacy_ids: ["gemini-3-flash-preview", "gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash"]
+  enabled: true
+  input_price: "0.75"
+  cached_input_price: "0.075"
+  output_price: "3.75"
+  price_level: 2
+  context_length: 1048576
+  output_length: 65536
+  intelligence: 5
+  speed: 4
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["low", "medium", "high"]
+  timeout: 300
+
+# OpenRouter's Vertex promo (0.375/1.875) ended in 2026-09; the Vertex and
+# AI Studio endpoints both bill Google's introductory 0.75/3.75 now.
+- id: "google/gemini-flash"
+  api_id: "~google/gemini-flash-latest"
+  name: "Gemini 3.8 Flash"
+  provider: openrouter
+  origin_provider: "google-vertex/global"   # lock OpenRouter upstream
+  legacy_ids: ["google/gemini-3-flash-preview", "google/gemini-3.5-flash", "google/gemini-3.6-flash", "google/gemini-3.7-flash"]
+  enabled: true
+  input_price: "0.75"
+  cached_input_price: "0.075"
+  output_price: "3.75"
+  price_level: 2
+  context_length: 1048576
+  output_length: 65536
+  intelligence: 5
+  speed: 4
+  supports_image_input: true
+  supports_audio_input: true
+  supports_video_input: true
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["low", "medium", "high"]
+  timeout: 300
+
+# OpenAI cut Sol to 4/0.4/20 when GPT-6 Astra launched (promotional, listed
+# through at least 2026-11-21; was 5/0.5/30).
+- id: "gpt-sol"
+  api_id: "gpt-5.6-sol"
+  name: "GPT-5.6 Sol"
+  provider: openai
+  enabled: true
+  input_price: "4"
+  cached_input_price: "0.4"
+  output_price: "20"
+  price_level: 4
+  context_length: 1050000
+  output_length: 128000
+  intelligence: 5
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "low", "medium", "high", "xhigh", "max"]
+  timeout: 180
+
+# Sol on OpenRouter: 50% off OpenAI's promo list (promo, as of 2026-09-16).
+- id: "openai/gpt-sol"
+  api_id: "~openai/gpt-sol-latest"
+  name: "GPT-5.6 Sol"
+  provider: openrouter
+  origin_provider: "openai"   # lock OpenRouter upstream
+  legacy_ids: ["openai/gpt-5.6-sol"]
+  enabled: true
+  input_price: "2"
+  cached_input_price: "0.2"
+  output_price: "10"
+  price_level: 3
+  context_length: 1050000
+  output_length: 128000
+  intelligence: 5
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "low", "medium", "high", "xhigh", "max"]
+  timeout: 180
+
+- id: "gpt-terra"
+  api_id: "gpt-5.6-terra"
+  name: "GPT-5.6 Terra"
+  provider: openai
+  legacy_ids: ["gpt-5.4"]
+  enabled: true
+  input_price: "2"
+  cached_input_price: "0.2"
+  output_price: "12"
+  price_level: 4
+  context_length: 1050000
+  output_length: 128000
+  intelligence: 5
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "low", "medium", "high", "xhigh", "max"]
+  timeout: 180
+
+- id: "openai/gpt-terra"
+  api_id: "~openai/gpt-terra-latest"
+  name: "GPT-5.6 Terra"
+  provider: openrouter
+  origin_provider: "openai"   # lock OpenRouter upstream
+  legacy_ids: ["openai/gpt-5.4", "openai/gpt-5.6-terra"]
+  enabled: true
+  input_price: "2"
+  cached_input_price: "0.2"
+  output_price: "12"
+  price_level: 4
+  context_length: 1050000
+  output_length: 128000
+  intelligence: 5
+  speed: 3
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: true
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "low", "medium", "high", "xhigh", "max"]
+  timeout: 180
+
+- id: "gpt-luna"
+  api_id: "gpt-5.6-luna"
+  name: "GPT-5.6 Luna"
+  provider: openai
+  legacy_ids: ["gpt-5.4-mini", "gpt-5.4-nano"]
+  enabled: true
+  input_price: "0.2"
+  cached_input_price: "0.02"
+  output_price: "1.2"
+  price_level: 2
+  context_length: 1050000
+  output_length: 128000
+  intelligence: 4
+  speed: 4
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: true
+  reasoning_effort: "low"
+  reasoning_levels: ["none", "low", "medium", "high", "xhigh", "max"]
+  timeout: 180
+
+- id: "openai/gpt-luna"
+  api_id: "~openai/gpt-luna-latest"
+  name: "GPT-5.6 Luna"
+  provider: openrouter
+  origin_provider: "openai"   # lock OpenRouter upstream
+  legacy_ids: ["openai/gpt-5.4-mini", "openai/gpt-5.4-nano", "openai/gpt-5.6-luna"]
+  enabled: true
+  input_price: "0.2"
+  cached_input_price: "0.02"
+  output_price: "1.2"
+  price_level: 2
+  context_length: 1050000
+  output_length: 128000
+  intelligence: 4
+  speed: 4
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: true
+  reasoning_effort: "low"
+  reasoning_levels: ["none", "low", "medium", "high", "xhigh", "max"]
+  timeout: 180
+
+# DeepSeek doubles every price 01:00-04:00 and 06:00-10:00 UTC on weekdays.
+# All four DeepSeek rows below carry the off-peak (standard) rate only, the
+# way the xAI rows ignore the >200k long-context tier.
+#
+# V4.1 Flash (2026-09-10) is DeepSeek's unified multimodal build: native image
+# input, thinking on by default server-side (the toggle is passed explicitly),
+# and DeepSeek states it surpasses V4 Pro on quality, cost and speed. DeepSeek's
+# own API exposes it as the versionless "deepseek-flash"; the retired V4 ids are
+# still accepted upstream and route here via legacy_ids.
+- id: "deepseek-flash"
+  name: "Deepseek V4.1 Flash"
+  provider: deepseek
+  legacy_ids: ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp"]
+  enabled: true
+  input_price: "0.15"
+  cached_input_price: "0.003"
+  output_price: "0.6"
+  price_level: 1
+  context_length: 1048576
+  output_length: 384000
+  intelligence: 5
+  speed: 4
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: false
+  reasoning_effort: "none"
+  reasoning_levels: ["none", "high", "max"]
+  timeout: 300
+
+# OpenRouter lists each official build separately; the "-latest" alias tracks
+# the newest one (DeepSeek's own API upgrades its versionless ids in place).
+- id: "deepseek/deepseek-flash"
+  api_id: "~deepseek/deepseek-flash-latest"
+  name: "Deepseek V4.1 Flash"
+  provider: openrouter
+  origin_provider: "deepseek"   # lock OpenRouter upstream
+  legacy_ids: ["deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-flash-0731", "deepseek/deepseek-v4-flash-vision-exp", "deepseek/deepseek-v4.1-flash"]
+  enabled: true
+  input_price: "0.15"
+  cached_input_price: "0.003"
+  output_price: "0.6"
+  price_level: 1
+  context_length: 1048576
+  output_length: 384000
+  intelligence: 5
+  speed: 4
+  supports_image_input: true
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: false
+  reasoning_effort: "none"
+  reasoning_levels: ["none", "high", "max"]
+  timeout: 300
+
+- id: "deepseek-pro"
+  api_id: "deepseek-v4-pro"
+  name: "Deepseek V4 Pro"
+  provider: deepseek
+  enabled: true
+  input_price: "0.66"
+  cached_input_price: "0.022"
+  output_price: "1.98"
+  price_level: 2
+  context_length: 1048576
+  output_length: 384000
+  intelligence: 5
+  speed: 2
+  supports_image_input: false
+  supports_audio_input: false
+  supports_video_input: false
+  supports_file_input: false
+  reasoning_effort: "high"
+  reasoning_levels: ["none", "high", "max"]
+  timeout: 300
+
+- id: "deepseek/deepseek-pro"
+  api_id: "~deepseek/deepseek-pro-latest"
   name: "Deepseek V4 Pro"
   provider: openrouter
   origin_provider: "deepseek"   # lock OpenRouter upstream
+  legacy_ids: ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-pro-0813"]
   enabled: true
-  input_price: "1.74"
-  cached_input_price: "0.145"
-  output_price: "3.48"
-  price_level: 3
+  input_price: "0.66"
+  cached_input_price: "0.022"
+  output_price: "1.98"
+  price_level: 2
   context_length: 1048576
-  output_length: 64000
+  output_length: 384000
   intelligence: 5
   speed: 2
   supports_image_input: false
@@ -790,20 +816,23 @@
   supports_video_input: false
   supports_file_input: false
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_levels: ["none", "high", "max"]
   timeout: 300
 
-- id: "grok-4.3"
-  name: "Grok 4.3"
+# xAI bills prompts above 200k tokens at 2x on a long-context tier; the flat
+# prices here cover the standard tier only.
+- id: "grok"
+  api_id: "grok-4.6"
+  name: "Grok 4.6"
   provider: xai
+  # grok-4.20 is older than 4.5/4.6 despite the version number (Musk-style numbering)
+  legacy_ids: ["grok-4.5", "grok-4.3", "grok-4.20-non-reasoning"]
   enabled: true
-  input_price: "1.25"
-  cached_input_price: "0.125"
-  output_price: "2.5"
-  price_level: 2
-  context_length: 1000000
+  input_price: "2"
+  cached_input_price: "0.5"
+  output_price: "6"
+  price_level: 3
+  context_length: 500000
   output_length: 128000
   intelligence: 5
   speed: 4
@@ -812,20 +841,22 @@
   supports_video_input: false
   supports_file_input: true
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
+  reasoning_levels: ["low", "medium", "high", "xhigh"]
   timeout: 180
 
-- id: "x-ai/grok-4.3"
-  name: "Grok 4.3"
+- id: "x-ai/grok"
+  api_id: "~x-ai/grok-latest"
+  name: "Grok 4.6"
   provider: openrouter
+  origin_provider: "xai"   # lock OpenRouter upstream
+  # grok-4.20 is older than 4.5/4.6 despite the version number (Musk-style numbering)
+  legacy_ids: ["x-ai/grok-4.5", "x-ai/grok-4.3", "x-ai/grok-4.20", "x-ai/grok-4.6"]
   enabled: true
-  input_price: "1.25"
-  cached_input_price: "0.125"
-  output_price: "2.5"
-  price_level: 2
-  context_length: 1000000
+  input_price: "2"
+  cached_input_price: "0.5"
+  output_price: "6"
+  price_level: 3
+  context_length: 500000
   output_length: 128000
   intelligence: 5
   speed: 4
@@ -834,65 +865,75 @@
   supports_video_input: false
   supports_file_input: true
   reasoning_effort: "high"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
+  reasoning_levels: ["low", "medium", "high", "xhigh"]
   timeout: 180
 
-- id: "grok-4.20-non-reasoning"
-  name: "Grok 4.20"
-  provider: xai
+# https://platform.minimax.io/docs/api-reference/text-anthropic-api
+# https://platform.minimax.io/docs/pricing/overview
+- id: "minimax-flash"
+  api_id: "MiniMax-M3.1-Flash"
+  name: "MiniMax M3.1 Flash"
+  provider: minimax
   enabled: true
-  input_price: "1.25"
-  cached_input_price: "0.125"
-  output_price: "2.5"
-  price_level: 2
-  context_length: 2000000
-  output_length: 128000
-  intelligence: 4
+  input_price: "0.15"
+  cached_input_price: "0.015"
+  output_price: "0.60"
+  price_level: 1
+  context_length: 1000000
+  output_length: 524288
+  intelligence: 5
   speed: 4
   supports_image_input: true
+  supports_video_input: true
+  reasoning_effort: "max"
+  reasoning_levels: ["low", "medium", "high", "xhigh", "max"]
+  timeout: 300
+
+# Explicit legacy requests remain routable but are not ordinary picker choices.
+- id: "MiniMax-M2.7"
+  api_id: "MiniMax-M2.7"
+  name: "MiniMax M2.7 (legacy)"
+  provider: minimax
+  selectable: false
+  input_price: "0.3"
+  cached_input_price: "0.06"
+  output_price: "1.2"
+  context_length: 204800
+  output_length: 204800
+  intelligence: 4
+  speed: 4
+  supports_image_input: false
   supports_audio_input: false
   supports_video_input: false
-  supports_file_input: true
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 180
+  timeout: 300
 
-- id: "x-ai/grok-4.20"
-  name: "Grok 4.20"
+- id: "minimax/minimax-m2-her"
+  api_id: "minimax/minimax-m2-her"
+  name: "MiniMax M2-her (legacy)"
   provider: openrouter
-  enabled: true
-  input_price: "1.25"
-  cached_input_price: "0.125"
-  output_price: "2.5"
-  price_level: 2
-  context_length: 2000000
-  output_length: 128000
+  selectable: false
+  input_price: "0.3"
+  cached_input_price: "0.03"
+  output_price: "1.2"
+  context_length: 65536
+  output_length: 2048
   intelligence: 4
   speed: 4
-  supports_image_input: true
+  supports_image_input: false
   supports_audio_input: false
   supports_video_input: false
-  supports_file_input: true
-  reasoning_effort: "none"
-  supports_temperature: true
-  supports_frequency_penalty: true
-  supports_presence_penalty: true
-  timeout: 180
+  timeout: 300
 
-- id: "MiniMax-M3"
+- id: "minimax"
+  api_id: "MiniMax-M3"
   name: "MiniMax M3"
   provider: minimax
   enabled: true
-  input_price: "0.6"
-  cached_input_price: "0.12"
-  cache_write_price: null
-  output_price: "2.4"
+  input_price: "0.3"
+  cached_input_price: "0.06"
+  output_price: "1.2"
   price_level: 2
-  context_length: 1000000
+  context_length: 524288
   output_length: 512000
   intelligence: 5
   speed: 3
@@ -901,34 +942,5 @@
   supports_video_input: true
   supports_file_input: false
   reasoning_effort: "high"
-  thinking_modes: ["adaptive", "disabled"]
-  default_thinking_mode: "disabled"
-  supports_temperature: true
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
-  timeout: 300
-
-- id: "MiniMax-M2.7"
-  name: "MiniMax M2.7"
-  provider: minimax
-  enabled: true
-  input_price: "0.3"
-  cached_input_price: "0.06"
-  cache_write_price: "0.375"
-  output_price: "1.2"
-  price_level: 2
-  context_length: 204800
-  output_length: 204800
-  intelligence: 5
-  speed: 3
-  supports_image_input: false
-  supports_audio_input: false
-  supports_video_input: false
-  supports_file_input: false
-  reasoning_effort: "high"
-  thinking_modes: ["always_on"]
-  default_thinking_mode: "always_on"
-  supports_temperature: true
-  supports_frequency_penalty: false
-  supports_presence_penalty: false
+  reasoning_levels: ["none", "high"]
   timeout: 300

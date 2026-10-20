@@ -31,6 +31,7 @@ class GetMarket(PolymarketBaseTool):
     """
 
     name: str = "polymarket_get_market"
+    title: str = "Get Market"
     description: str = (
         "Get detailed information about a specific Polymarket prediction market. "
         "Provide a condition_id or slug. Returns market description, current "
@@ -64,7 +65,7 @@ class GetMarket(PolymarketBaseTool):
                 if result and isinstance(result, dict) and result.get("conditionId"):
                     market = result
                     break
-            except Exception:
+            except Exception:  # noqa: S112 - expected miss while probing candidates
                 continue
 
         if not market:

@@ -16,10 +16,8 @@ from intentkit.tools.aerodrome.constants import (
     CL_GAUGE_ABI,
     MAX_TICK,
     MIN_TICK,
-    NETWORK_TO_CHAIN_ID,
     POSITION_MANAGER_ABI,
     POSITION_MANAGER_ADDRESS,
-    STAKED_DATA_KEY,
     TICK_SPACINGS,
     TOOL_DATA_NAMESPACE,
     VOTER_ABI,
@@ -33,7 +31,9 @@ from intentkit.tools.aerodrome.utils import (
     get_decimals,
     get_token_symbol,
     resolve_token,
+    staked_data_key,
 )
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 NAME = "aerodrome_add_liquidity"
 
@@ -41,6 +41,7 @@ NAME = "aerodrome_add_liquidity"
 class AerodromeAddLiquidityInput(BaseModel):
     """Input for Aerodrome add liquidity."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_a: str = Field(description="First token address, or 'native' for ETH on Base")
     token_b: str = Field(
         description="Second token address, or 'native' for ETH on Base"
@@ -65,6 +66,8 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
     """Add liquidity to an Aerodrome Slipstream pool on Base."""
 
     name: str = NAME
+    title: str = "Add Liquidity"
+    team_only: bool = True
     description: str = (
         "Add liquidity to an Aerodrome Slipstream pool on Base. "
         "Creates a full-range CL position. "
@@ -76,6 +79,7 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_a: str,
         token_b: str,
         amount_a: str,
@@ -85,16 +89,9 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
         **kwargs: Any,
     ) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
-
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"Aerodrome is only supported on Base. "
-                    f"Current network: {network_id}"
-                )
+            wallet = await self.get_unified_wallet(wallet_address)
+            # Validate the wallet network (Aerodrome is Base-only).
+            self._resolve_chain_id(wallet.network_id)
 
             if tick_spacing not in TICK_SPACINGS:
                 valid = ", ".join(str(t) for t in TICK_SPACINGS)
@@ -102,8 +99,7 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
                     f"Invalid tick spacing {tick_spacing}. Valid: {valid}"
                 )
 
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
+            w3 = wallet.w3
 
             is_native_a = token_a.lower() == "native"
             is_native_b = token_b.lower() == "native"
@@ -172,7 +168,7 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
             await ensure_allowance(w3, wallet, token1, checksum_pm, amount1)
 
             pm = w3.eth.contract(address=checksum_pm, abi=POSITION_MANAGER_ABI)
-            wallet_address = Web3.to_checksum_address(wallet.address)
+            checksum_wallet = Web3.to_checksum_address(wallet.address)
             deadline = int(time.time()) + 600  # 10 minutes
 
             mint_data = pm.encode_abi(
@@ -188,7 +184,7 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
                         amount1,
                         amount0_min,
                         amount1_min,
-                        wallet_address,
+                        checksum_wallet,
                         deadline,
                         0,  # sqrtPriceX96 = 0 (pool already exists)
                     )
@@ -210,7 +206,7 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
             farming_status = "Not staked (no gauge found)"
             if token_id and gauge_address:
                 farming_status = await self._try_auto_stake(
-                    wallet, w3, pm, token_id, gauge_address
+                    wallet, w3, pm, token_id, gauge_address, wallet_address
                 )
 
             sym0 = await get_token_symbol(w3, token0)
@@ -256,6 +252,7 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
         pm: Any,
         token_id: int,
         gauge_address: str,
+        wallet_address: str,
     ) -> str:
         """Auto-stake position into gauge for AERO rewards."""
         try:
@@ -280,8 +277,9 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
                 return "Not staked (gauge deposit failed)"
 
             # Use shared namespace so get_positions and remove_liquidity can read
+            data_key = staked_data_key(wallet_address)
             staked_data = await self.get_agent_tool_data_raw(
-                TOOL_DATA_NAMESPACE, STAKED_DATA_KEY
+                TOOL_DATA_NAMESPACE, data_key
             )
             token_ids: list[int] = (
                 staked_data.get("token_ids", []) if staked_data else []
@@ -293,7 +291,7 @@ class AerodromeAddLiquidity(AerodromeBaseTool):
             gauges[str(token_id)] = gauge_address
             await self.save_agent_tool_data_raw(
                 TOOL_DATA_NAMESPACE,
-                STAKED_DATA_KEY,
+                data_key,
                 {"token_ids": token_ids, "gauges": gauges},
             )
 

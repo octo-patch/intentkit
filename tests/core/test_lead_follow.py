@@ -1,6 +1,6 @@
 """Tests for the lead's public-agent follow/unfollow tools and prompt injection."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +28,6 @@ def _agent(
     agent_id="a1",
     name="Agent",
     slug=None,
-    purpose="Do things",
     visibility=20,
     description=None,
 ):
@@ -36,7 +35,6 @@ def _agent(
     a.id = agent_id
     a.name = name
     a.slug = slug
-    a.purpose = purpose
     a.description = description
     a.model = "gpt-4o"
     a.owner = "owner-1"
@@ -233,25 +231,19 @@ def test_followed_agents_section_lists_agents():
     )
 
     agents = [
-        # Public description is preferred over the internal purpose.
         _agent(
             "a1",
             "Finance Bot",
             slug="finance-bot",
-            purpose="Analyze markets",
             description="Your friendly markets analyst",
         ),
-        # No description -> falls back to purpose.
-        _agent("a2", "Writer", slug="writer", purpose="Write posts"),
-        # Neither description nor purpose -> name only, id label fallback.
-        _agent("a3", "Quiet", slug=None, purpose=""),
+        # No description -> name only, id label fallback.
+        _agent("a3", "Quiet", slug=None),
     ]
     section = _build_followed_agents_section(agents)  # pyright: ignore[reportArgumentType]
 
     assert "### Followed Agents" in section
     assert "`finance-bot` (Finance Bot): Your friendly markets analyst" in section
-    assert "Analyze markets" not in section  # purpose not used when description set
-    assert "`writer` (Writer): Write posts" in section
     # Falls back to id as the label when slug is missing, name still shown.
     assert "`a3` (Quiet)" in section
 
@@ -368,7 +360,7 @@ async def test_call_db_agent_rejects_archived(mock_lead_runtime):
     # An own-team agent that happens to be archived must not be callable.
     archived = _agent("own-1", "Archived", visibility=10)
     archived.team_id = "test-team"
-    archived.archived_at = datetime.now(timezone.utc)
+    archived.archived_at = datetime.now(UTC)
 
     tool = LeadCallAgent()
     with patch(

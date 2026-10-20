@@ -7,8 +7,8 @@ from typing import Any
 from intentkit.clients.mcp.client import list_mcp_tools
 from intentkit.clients.mcp.registry import MCP_SERVERS, McpServerDef
 from intentkit.config.config import config as system_config
-from intentkit.tools.base import ToolsetConfig, is_tool_visible
 from intentkit.tools.mcp.tool import McpToolTool, create_mcp_tool
+from intentkit.tools.meta import ToolMeta, ToolsetMeta
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +28,9 @@ def _resolve_system_api_key(server_def: McpServerDef) -> str | None:
 
 async def _get_mcp_tool_instances(
     server_def: McpServerDef,
-    api_key_override: str | None = None,
 ) -> dict[str, McpToolTool]:
     """Get pre-built tool instances for an MCP server, with caching."""
-    api_key = api_key_override or _resolve_system_api_key(server_def)
+    api_key = _resolve_system_api_key(server_def)
     cache_key = (server_def.name, api_key)
 
     now = time.time()
@@ -71,44 +70,57 @@ class McpCategoryModule:
     """Provides the standard toolset interface for an MCP server."""
 
     server_name: str
+    toolset: ToolsetMeta
     _server_def: McpServerDef
-
-    Config: type[ToolsetConfig] = ToolsetConfig
 
     def __init__(self, server_name: str):
         self.server_name = server_name
         self._server_def = MCP_SERVERS[server_name]
+        # Remote MCP servers own their (changing) tool list, so the catalog
+        # carries a single fixed entry for the whole server instead of a
+        # per-tool snapshot that could go stale.
+        self.toolset = ToolsetMeta(
+            title=self._server_def.display_name,
+            description=self._server_def.description,
+            tags=list(self._server_def.tags),
+            web3=self._server_def.web3,
+            wallet=self._server_def.wallet,
+            icon=self._server_def.icon,
+            tools={
+                self._server_def.name: ToolMeta(
+                    title=f"All {self._server_def.display_name} Tools",
+                    description=(
+                        f"Expose every tool offered by the "
+                        f"{self._server_def.display_name} MCP server. The exact "
+                        "tools are discovered live from the server at runtime."
+                    ),
+                )
+            },
+        )
 
     async def get_tools(
         self,
-        config: dict[str, Any],
-        is_private: bool,
+        tool_names: list[str],
         **_: Any,
     ) -> list[McpToolTool]:
-        """Expose the server's tools, gated by one coarse visibility setting.
+        """Expose the server's tools when the server name is enabled.
 
         Remote MCP servers own their (changing) tool list, so we never
-        snapshot or toggle individual tools. The agent config carries a single
-        visibility state for the whole server, keyed by the server name; when
-        it permits the current caller, every tool discovered live from the
-        server is exposed. This can't drift when the server changes its tools.
+        snapshot or toggle individual tools. The agent's tools list carries a
+        single entry for the whole server, keyed by the server name; when
+        present, every tool discovered live from the server is exposed. This
+        can't drift when the server changes its tools.
         """
-        visibility = config.get("states", {}).get(self._server_def.name)
-        if not is_tool_visible(visibility, is_private):
+        if self._server_def.name not in tool_names:
             return []
 
-        # Use per-agent API key for discovery if system key is not set
-        agent_api_key = config.get("api_key")
-        instances = await _get_mcp_tool_instances(
-            self._server_def, api_key_override=agent_api_key
-        )
+        instances = await _get_mcp_tool_instances(self._server_def)
         return list(instances.values())
 
     def available(self) -> bool:
         """Check if this MCP server is available.
 
         Returns True if no API key is required, or if a system-level key is configured.
-        Per-agent keys are checked at get_tools time, not here.
         """
         if self._server_def.api_key_config_attr:
             return bool(_resolve_system_api_key(self._server_def))

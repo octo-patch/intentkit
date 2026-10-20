@@ -16,6 +16,7 @@ from intentkit.core.agent import (
 )
 from intentkit.core.cleanup import cleanup_checkpoints
 from intentkit.core.credit import refill_all_free_credits
+from intentkit.core.memory import run_memory_sweep
 
 # close quota limit by default
 # from intentkit.models.agent_data import AgentQuota
@@ -53,6 +54,18 @@ def create_scheduler(
         trigger=CronTrigger(minute="40", timezone="UTC"),
         id="update_agent_action_cost",
         name="Update agent action costs",
+        replace_existing=True,
+    )
+
+    # Age memory findings out and rebuild the topics that changed, once a
+    # day at UTC 03:30. Daily is the right cadence for caps counted in
+    # months; the off-peak slot keeps the rebuilds' model calls clear of the
+    # hourly jobs above.
+    _ = scheduler.add_job(
+        run_memory_sweep,
+        trigger=CronTrigger(hour=3, minute=30, timezone="UTC"),
+        id="memory_sweep",
+        name="Expire aged memory findings and rebuild summaries",
         replace_existing=True,
     )
 

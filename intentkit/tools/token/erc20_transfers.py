@@ -60,6 +60,7 @@ class ERC20Transfers(TokenBaseTool):
     """
 
     name: str = "token_erc20_transfers"
+    title: str = "ERC20 Token Transfers"
     description: str = "Get ERC20 token transfers for a wallet address."
     args_schema: ArgsSchema | None = ERC20TransfersInput
 
@@ -135,5 +136,5 @@ class ERC20Transfers(TokenBaseTool):
         except Exception as e:
             logger.error("Error fetching ERC20 transfers: %s", e)
             return {
-                "error": f"An error occurred while fetching ERC20 transfers: {str(e)}. Please try again later."
+                "error": f"An error occurred while fetching ERC20 transfers: {e!s}. Please try again later."
             }

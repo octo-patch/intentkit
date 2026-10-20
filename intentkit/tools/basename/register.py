@@ -19,11 +19,13 @@ from intentkit.tools.basename.constants import (
     REGISTRATION_DURATION,
     SUPPORTED_NETWORKS,
 )
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 
 class RegisterBasenameInput(BaseModel):
     """Input schema for registering a Basename."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     basename: str = Field(
         ...,
         description="Basename to register (e.g., 'myname.base.eth' or 'myname.basetest.eth')",
@@ -37,10 +39,12 @@ class RegisterBasenameInput(BaseModel):
 class BasenameRegister(BasenameBaseTool):
     """Register a Basename ENS-style domain.
 
-    This tool registers a Basename for the agent's wallet address on Base network.
+    This tool registers a Basename for the selected wallet address on Base network.
     """
 
     name: str = "basename_register_basename"
+    title: str = "Register Basename"
+    team_only: bool = True
     description: str = (
         "Register a Basename ENS-style domain on Base network. "
         "Use .base.eth suffix for base-mainnet and .basetest.eth for base-sepolia. "
@@ -50,12 +54,14 @@ class BasenameRegister(BasenameBaseTool):
 
     async def _arun(
         self,
+        wallet_address: str,
         basename: str,
         amount: str = "0.002",
     ) -> str:
-        """Register a Basename for the agent.
+        """Register a Basename for the selected wallet.
 
         Args:
+            wallet_address: The team wallet address to register with.
             basename: The Basename to register.
             amount: The amount of ETH to pay for registration.
 
@@ -63,15 +69,16 @@ class BasenameRegister(BasenameBaseTool):
             A message containing the registration result or error details.
         """
         try:
-            # Get the unified wallet
-            wallet = await self.get_unified_wallet()
-            network_id = self.get_agent_network_id()
+            # Get the unified wallet (signing-capable, guarded); the wallet
+            # determines the network to register on.
+            wallet = await self.get_unified_wallet(wallet_address)
+            network_id = wallet.network_id
 
             # Validate network
             if network_id not in SUPPORTED_NETWORKS:
                 raise ToolException(
                     f"Error: Basename registration is only supported on Base networks. "
-                    f"Current network: {network_id}. "
+                    f"Wallet network: {network_id}. "
                     f"Supported networks: {', '.join(SUPPORTED_NETWORKS)}"
                 )
 
@@ -135,7 +142,7 @@ class BasenameRegister(BasenameBaseTool):
             )
 
             # Wait for receipt
-            receipt = await wallet.wait_for_transaction_receipt(tx_hash)  # pyright: ignore[reportAttributeAccessIssue]
+            receipt = await wallet.wait_for_receipt(tx_hash)
 
             if receipt.get("status") == 0:
                 return (

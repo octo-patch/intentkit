@@ -8,6 +8,7 @@ so that agents can be referenced by human-readable URLs.
 
 import pytest
 
+from intentkit.config.db import get_session
 from intentkit.core.agent import (
     create_agent,
     get_agent_by_id_or_slug,
@@ -15,6 +16,8 @@ from intentkit.core.agent import (
     patch_agent,
 )
 from intentkit.models.agent import AgentCreate, AgentUpdate
+from intentkit.models.agent_activity import AgentActivityTable
+from intentkit.models.agent_post import AgentPostTable
 from intentkit.utils.error import IntentKitAPIError
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -275,3 +278,205 @@ async def test_get_agent_by_slug_not_found():
     """
     agent = await get_agent_by_id_or_slug("nonexistent-slug")
     assert agent is None
+
+
+@pytest.mark.bdd
+async def test_patch_endpoint_accepts_a_slug():
+    """
+    Scenario: Saving from a Slug URL
+
+    Given an agent whose edit page has rewritten the address bar to its slug
+    When the frontend PATCHes against that slug
+    Then the update is applied to the right agent
+
+    The endpoint resolves the slug itself: ``patch_agent`` looks up by id only,
+    so passing the path parameter straight through 404s once the URL carries a
+    slug. GET /agents/{agent_id}/editable has always accepted either form.
+    """
+    from fastapi import BackgroundTasks
+
+    from app.local.agent import patch_agent_endpoint
+
+    await create_agent(
+        AgentCreate(
+            id="slug-patch-id",
+            name="Before",
+            model="gpt-4o-mini",
+            slug="patch-by-slug",
+        )
+    )
+
+    await patch_agent_endpoint(
+        BackgroundTasks(),
+        agent_id="patch-by-slug",
+        agent=AgentUpdate(name="After", model="gpt-4o-mini"),
+    )
+
+    agent = await get_agent_by_id_or_slug("slug-patch-id")
+    assert agent is not None
+    assert agent.name == "After"
+
+
+@pytest.mark.bdd
+async def test_patch_endpoint_404s_on_an_unknown_slug():
+    """
+    Scenario: Unknown Slug
+
+    When the frontend PATCHes against a slug that resolves to nothing
+    Then a 404 is raised rather than the request silently doing nothing
+    """
+    from fastapi import BackgroundTasks
+
+    from app.local.agent import patch_agent_endpoint
+
+    with pytest.raises(IntentKitAPIError) as exc:
+        await patch_agent_endpoint(
+            BackgroundTasks(),
+            agent_id="no-such-slug",
+            agent=AgentUpdate(name="X", model="gpt-4o-mini"),
+        )
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.bdd
+async def test_override_endpoint_accepts_a_slug():
+    """
+    Scenario: Overriding from a Slug URL
+
+    Given an agent with a slug
+    When the frontend PUTs against that slug
+    Then the override is applied to the right agent
+
+    PUT/archive/reactivate share the PATCH endpoint's exposure: the address
+    bar may carry a slug while override_agent and the row updates are id-only.
+    """
+    from fastapi import BackgroundTasks
+
+    from app.local.agent import override_agent_endpoint
+
+    await create_agent(
+        AgentCreate(
+            id="slug-override-id",
+            name="Before Override",
+            model="gpt-4o-mini",
+            slug="override-by-slug",
+        )
+    )
+
+    await override_agent_endpoint(
+        BackgroundTasks(),
+        agent_id="override-by-slug",
+        agent=AgentUpdate(name="After Override", model="gpt-4o-mini"),
+    )
+
+    agent = await get_agent_by_id_or_slug("slug-override-id")
+    assert agent is not None
+    assert agent.name == "After Override"
+
+
+@pytest.mark.bdd
+async def test_content_endpoints_accept_a_slug():
+    """
+    Scenario: Browsing Feeds from a Slug URL
+
+    Given an agent with a slug that has an activity and a post
+    When the activities, posts and post-by-slug endpoints are called with the slug
+    Then the agent's rows are returned
+
+    Content rows store the real agent id; before the fix the endpoints filtered
+    by the raw path parameter, so a slug produced a silently empty feed.
+    """
+    from app.local.content import (
+        get_agent_activities,
+        get_agent_posts,
+        get_post_by_slug,
+    )
+
+    await create_agent(
+        AgentCreate(
+            id="slug-feed-id",
+            name="Feed Agent",
+            model="gpt-4o-mini",
+            slug="feed-by-slug",
+        )
+    )
+    async with get_session() as db:
+        db.add(AgentActivityTable(agent_id="slug-feed-id", text="hello"))
+        db.add(
+            AgentPostTable(
+                agent_id="slug-feed-id",
+                title="Feed Post",
+                markdown="body",
+                slug="feed-post",
+            )
+        )
+        await db.commit()
+
+    async with get_session() as db:
+        activities = await get_agent_activities(agent_id="feed-by-slug", db=db)
+        posts = await get_agent_posts(agent_id="feed-by-slug", db=db)
+        post = await get_post_by_slug(agent_id="feed-by-slug", slug="feed-post", db=db)
+
+    assert [a.text for a in activities] == ["hello"]
+    assert [p.title for p in posts] == ["Feed Post"]
+    assert post.title == "Feed Post"
+
+
+@pytest.mark.bdd
+async def test_content_endpoints_404_on_an_unknown_agent():
+    """
+    Scenario: Feeds for an Unknown Agent
+
+    When the activities endpoint is called with an id or slug that resolves
+    to nothing
+    Then a 404 is raised rather than an empty list
+    """
+    from app.local.content import get_agent_activities
+
+    with pytest.raises(IntentKitAPIError) as exc:
+        async with get_session() as db:
+            await get_agent_activities(agent_id="no-such-feed-slug", db=db)
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.bdd
+async def test_team_content_endpoints_accept_a_slug():
+    """
+    Scenario: Team Feeds from a Slug URL
+
+    Given a team agent with a slug that has an activity and a post
+    When the team activities and posts endpoints are called with the slug
+    Then the agent's rows are returned
+
+    Before the fix the auth check resolved the slug but the row filter used
+    the raw path parameter, so the feed was silently empty.
+    """
+    from app.team.content import get_agent_activities, get_agent_posts
+
+    team_id = "slug-feed-team"
+    await create_agent(
+        AgentCreate(
+            id="slug-team-feed-id",
+            name="Team Feed Agent",
+            model="gpt-4o-mini",
+            slug="team-feed-by-slug",
+            team_id=team_id,
+        )
+    )
+    async with get_session() as db:
+        db.add(AgentActivityTable(agent_id="slug-team-feed-id", text="team hello"))
+        db.add(
+            AgentPostTable(
+                agent_id="slug-team-feed-id",
+                title="Team Feed Post",
+                markdown="body",
+            )
+        )
+        await db.commit()
+
+    auth = ("user-1", team_id)
+    activities = await get_agent_activities(agent_id="team-feed-by-slug", auth=auth)
+    posts = await get_agent_posts(agent_id="team-feed-by-slug", auth=auth)
+
+    assert [a.text for a in activities] == ["team hello"]
+    assert [p.title for p in posts] == ["Team Feed Post"]

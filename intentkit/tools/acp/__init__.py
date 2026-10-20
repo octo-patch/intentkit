@@ -1,9 +1,8 @@
 """ACP (Agentic Commerce Protocol) toolset."""
 
-import logging
-from typing import TypedDict
+from typing import Any
 
-from intentkit.tools.base import ToolsetConfig, ToolState
+from intentkit.tools.meta import ToolsetMeta
 
 from .base import AcpBaseTool
 from .cancel_checkout import AcpCancelCheckout
@@ -12,24 +11,16 @@ from .create_checkout import AcpCreateCheckout
 from .get_checkout import AcpGetCheckout
 from .list_products import AcpListProducts
 
-logger = logging.getLogger(__name__)
+toolset = ToolsetMeta(
+    title="ACP Commerce",
+    description="Purchase products from ACP (Agentic Commerce Protocol) merchants using x402 crypto payments.",
+    tags=["Commerce", "Crypto"],
+    web3=True,
+    icon="/tools/acp/acp.png",
+)
+
 
 _cache: dict[str, AcpBaseTool] = {}
-
-
-class ToolStates(TypedDict):
-    acp_list_products: ToolState
-    acp_create_checkout: ToolState
-    acp_get_checkout: ToolState
-    acp_complete_checkout: ToolState
-    acp_cancel_checkout: ToolState
-
-
-class Config(ToolsetConfig):
-    """Configuration for ACP tools."""
-
-    states: ToolStates
-
 
 _TOOL_BUILDERS: dict[str, type[AcpBaseTool]] = {
     "acp_list_products": AcpListProducts,
@@ -40,21 +31,10 @@ _TOOL_BUILDERS: dict[str, type[AcpBaseTool]] = {
 }
 
 
-async def get_tools(
-    config: "Config",
-    is_private: bool,
-    **_,
-) -> list[AcpBaseTool]:
-    """Return enabled ACP tools for the agent."""
-    enabled_tools = []
-    for tool_name, state in config["states"].items():
-        if state == "disabled":
-            continue
-        if state == "public" or (state == "private" and is_private):
-            enabled_tools.append(tool_name)
-
+async def get_tools(tool_names: list[str], **_: Any) -> list[AcpBaseTool]:
+    """Return ACP tool instances for the requested names."""
     result: list[AcpBaseTool] = []
-    for name in enabled_tools:
+    for name in tool_names:
         tool = _get_tool(name)
         if tool:
             result.append(tool)
@@ -63,12 +43,11 @@ async def get_tools(
 
 def _get_tool(name: str) -> AcpBaseTool | None:
     builder = _TOOL_BUILDERS.get(name)
-    if builder:
-        if name not in _cache:
-            _cache[name] = builder()
-        return _cache[name]
-    logger.warning("Unknown ACP tool requested: %s", name)
-    return None
+    if builder is None:
+        return None
+    if name not in _cache:
+        _cache[name] = builder()
+    return _cache[name]
 
 
 def available() -> bool:

@@ -69,21 +69,21 @@ def test_extract_cached_object_without_attribute():
 def _make_model_info(**overrides: Any) -> LLMModelInfo:
     from datetime import UTC, datetime
 
-    defaults: dict[str, Any] = dict(
-        id="test-model",
-        name="Test Model",
-        provider=LLMProvider.OPENAI,
-        enabled=True,
-        input_price=Decimal("3"),  # $3 per 1M tokens
-        cached_input_price=Decimal("0.3"),  # $0.3 per 1M tokens
-        output_price=Decimal("15"),  # $15 per 1M tokens
-        context_length=100000,
-        output_length=4096,
-        intelligence=5,
-        speed=3,
-        created_at=datetime.now(UTC),
-        updated_at=datetime.now(UTC),
-    )
+    defaults: dict[str, Any] = {
+        "id": "test-model",
+        "name": "Test Model",
+        "provider": LLMProvider.OPENAI,
+        "enabled": True,
+        "input_price": Decimal("3"),  # $3 per 1M tokens
+        "cached_input_price": Decimal("0.3"),  # $0.3 per 1M tokens
+        "output_price": Decimal("15"),  # $15 per 1M tokens
+        "context_length": 100000,
+        "output_length": 4096,
+        "intelligence": 5,
+        "speed": 3,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
     defaults.update(overrides)
     return LLMModelInfo(**defaults)
 
@@ -171,7 +171,7 @@ async def test_calculate_cost_cached_exceeds_input_clamps_to_zero(monkeypatch):
 
 
 def test_csv_loads_cached_input_price_for_claude():
-    """Claude Sonnet 4.6 should have cached_input_price=0.3 from CSV."""
+    """Claude Sonnet 5 should have cached_input_price=0.2 from the catalog."""
     with patch("intentkit.models.llm.config") as mock_config:
         mock_config.openai_api_key = None
         mock_config.google_api_key = None
@@ -188,20 +188,26 @@ def test_csv_loads_cached_input_price_for_claude():
 
         models = load_default_llm_models()
 
-    claude = models.get("openrouter:anthropic/claude-sonnet-4.6")
+    claude = models.get("openrouter:anthropic/claude-sonnet")
     assert claude is not None
-    assert claude.cached_input_price == Decimal("0.3")
-    assert claude.input_price == Decimal("3")
+    assert claude.cached_input_price == Decimal("0.2")
+    assert claude.input_price == Decimal("2")
 
 
 def test_csv_cached_input_price_for_deepseek():
-    """DeepSeek V4 Flash (deepseek provider) ships with cache-hit pricing of 0.0028/1M tokens."""
+    """DeepSeek V4.1 Flash bills 0.003/1M on cache hits and 0.15/1M otherwise.
+
+    The pinned DeepSeek endpoint on OpenRouter bills the same as the direct
+    API. These rows have twice recorded someone else's numbers -- a
+    third-party endpoint's cache rate, then prices matching MiMo's rows --
+    so pin both providers against the real DeepSeek rate.
+    """
     with patch("intentkit.models.llm.config") as mock_config:
         mock_config.openai_api_key = None
         mock_config.google_api_key = None
         mock_config.deepseek_api_key = "ds-test-key"
         mock_config.xai_api_key = None
-        mock_config.openrouter_api_key = None
+        mock_config.openrouter_api_key = "or-test-key"
         mock_config.minimax_plan_api_key = None
         mock_config.openai_compatible_api_key = None
         mock_config.openai_compatible_base_url = None
@@ -212,14 +218,29 @@ def test_csv_cached_input_price_for_deepseek():
 
         models = load_default_llm_models()
 
-    deepseek = models.get("deepseek:deepseek-v4-flash")
+    deepseek = models.get("deepseek:deepseek-flash")
     assert deepseek is not None
-    assert deepseek.cached_input_price == Decimal("0.0028")
-    assert deepseek.input_price == Decimal("0.14")
+    assert deepseek.cached_input_price == Decimal("0.003")
+    assert deepseek.input_price == Decimal("0.15")
+    assert deepseek.output_price == Decimal("0.6")
+
+    deepseek_or = models.get("openrouter:deepseek/deepseek-flash")
+    assert deepseek_or is not None
+    assert deepseek_or.cached_input_price == Decimal("0.003")
+    assert deepseek_or.input_price == Decimal("0.15")
+    assert deepseek_or.output_price == Decimal("0.6")
+
+    # Pro drifted the same way and by more; pin it on both providers too.
+    for key in ("deepseek:deepseek-pro", "openrouter:deepseek/deepseek-pro"):
+        pro = models.get(key)
+        assert pro is not None, key
+        assert pro.cached_input_price == Decimal("0.022")
+        assert pro.input_price == Decimal("0.66")
+        assert pro.output_price == Decimal("1.98")
 
 
 def test_csv_cached_input_price_for_grok4():
-    """Grok 4.20 (non-reasoning) should have cached_input_price=0.125."""
+    """Grok 4.5 should have cached_input_price=0.3 (xAI endpoint rate)."""
     with patch("intentkit.models.llm.config") as mock_config:
         mock_config.openai_api_key = None
         mock_config.google_api_key = None
@@ -236,6 +257,6 @@ def test_csv_cached_input_price_for_grok4():
 
         models = load_default_llm_models()
 
-    grok4 = models.get("xai:grok-4.20-non-reasoning")
+    grok4 = models.get("xai:grok")
     assert grok4 is not None
-    assert grok4.cached_input_price == Decimal("0.125")
+    assert grok4.cached_input_price == Decimal("0.5")

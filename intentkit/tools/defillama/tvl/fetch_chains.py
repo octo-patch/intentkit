@@ -30,8 +30,6 @@ class FetchChainsInput(BaseModel):
     TVL data for all chains.
     """
 
-    pass
-
 
 class FetchChainsResponse(BaseModel):
     """Response schema for all chains' TVL data."""
@@ -59,6 +57,7 @@ class DefiLlamaFetchChains(DefiLlamaBaseTool):
     """
 
     name: str = "defillama_fetch_chains"
+    title: str = "Fetch Chains"
     description: str = FETCH_CHAINS_PROMPT
     args_schema: ArgsSchema | None = FetchChainsInput
 

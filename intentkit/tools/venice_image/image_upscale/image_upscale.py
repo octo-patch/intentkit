@@ -20,6 +20,7 @@ class ImageUpscale(VeniceImageUpscaleBaseTool):
 
     # --- Tool Specific Configuration ---
     name: str = "venice_image_upscale"
+    title: str = "Image Upscale"
     description: str = (
         "Upscales an existing image from a URL using Venice AI.\n"
         "Provide the public URL of the image to upscale.\n"
@@ -55,8 +56,6 @@ class ImageUpscale(VeniceImageUpscaleBaseTool):
         try:
             context = self.get_context()
 
-            await self.apply_venice_rate_limit(context)
-
             image_base64 = await fetch_image_as_base64(image_url)
             if not image_base64:
                 error_msg = f"Failed to fetch or validate image from URL: {image_url}"
@@ -74,15 +73,15 @@ class ImageUpscale(VeniceImageUpscaleBaseTool):
             if error:
                 raise ToolException(f"Venice Image Upscale API error: {error}")
             return result
-        except ToolException as e:
-            raise e
+        except ToolException:
+            raise
         except Exception as e:
             logger.error("Error in %s: %s", self.name, e)
             raise ToolException(
                 str(
                     {
                         "success": False,
-                        "error": f"An unexpected error occurred: {str(e)}",
+                        "error": f"An unexpected error occurred: {e!s}",
                     }
                 )
             )

@@ -48,6 +48,7 @@ class TokenPrice(TokenBaseTool):
     """
 
     name: str = "token_price"
+    title: str = "ERC20 Token Price"
     description: str = "Get token price in native currency and USD."
     args_schema: ArgsSchema | None = TokenPriceInput
 
@@ -122,5 +123,5 @@ class TokenPrice(TokenBaseTool):
         except Exception as e:
             logger.error("Error fetching token price: %s", e)
             return {
-                "error": f"An error occurred while fetching token price: {str(e)}. Please try again later."
+                "error": f"An error occurred while fetching token price: {e!s}. Please try again later."
             }

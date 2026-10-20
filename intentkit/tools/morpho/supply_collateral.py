@@ -15,11 +15,13 @@ from intentkit.tools.morpho.constants import (
     MORPHO_BLUE_ABI,
     MORPHO_BLUE_ADDRESS,
 )
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 
 class SupplyCollateralInput(BaseModel):
     """Input for Morpho Blue supply collateral."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     market_id: str = Field(description="Morpho Blue market ID (bytes32 hex string)")
     amount: str = Field(
         description="Amount of collateral in whole units (e.g. '1' for 1 WETH)"
@@ -30,6 +32,8 @@ class MorphoSupplyCollateral(MorphoBaseTool):
     """Supply collateral to a Morpho Blue market."""
 
     name: str = "morpho_supply_collateral"
+    title: str = "Supply Collateral"
+    team_only: bool = True
     description: str = (
         "Supply collateral to a Morpho Blue market. "
         "Provide market_id (bytes32) and amount in whole units. "
@@ -40,14 +44,15 @@ class MorphoSupplyCollateral(MorphoBaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         market_id: str,
         amount: str,
         **kwargs: Any,
     ) -> str:
         try:
-            wallet = await self.get_unified_wallet()
+            wallet = await self.get_unified_wallet(wallet_address)
             self._validate_network(wallet.network_id)
-            w3 = self.web3_client()
+            w3 = wallet.w3
 
             (
                 loan_token,

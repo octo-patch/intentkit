@@ -12,18 +12,24 @@ from web3 import Web3
 from intentkit.tools.erc20.constants import ERC20_ABI
 from intentkit.tools.morpho.base import MorphoBaseTool
 from intentkit.tools.morpho.constants import METAMORPHO_ABI
+from intentkit.wallets.web3 import get_async_web3_client
 
 
 class GetVaultDataInput(BaseModel):
     """Input for getting MetaMorpho Vault data."""
 
     vault_address: str = Field(description="MetaMorpho Vault contract address")
+    network_id: str = Field(
+        default="base-mainnet",
+        description="Network to query: base-mainnet or base-sepolia",
+    )
 
 
 class MorphoGetVaultData(MorphoBaseTool):
     """Get MetaMorpho Vault data including total assets, share price, and underlying token."""
 
     name: str = "morpho_get_vault_data"
+    title: str = "Vault Data"
     description: str = (
         "Get MetaMorpho Vault info: total assets, total shares, "
         "share price, and underlying asset token. "
@@ -35,12 +41,13 @@ class MorphoGetVaultData(MorphoBaseTool):
     async def _arun(
         self,
         vault_address: str,
+        network_id: str = "base-mainnet",
         **kwargs: Any,
     ) -> str:
         try:
-            wallet = await self.get_unified_wallet()
-            self._validate_network(wallet.network_id)
-            w3 = self.web3_client()
+            # Pure on-chain read: no wallet involved at all.
+            self._validate_network(network_id)
+            w3 = get_async_web3_client(network_id)
 
             checksum_vault = Web3.to_checksum_address(vault_address)
             vault_contract = w3.eth.contract(address=checksum_vault, abi=METAMORPHO_ABI)
@@ -76,7 +83,7 @@ class MorphoGetVaultData(MorphoBaseTool):
                 f"Total Assets: {total_assets_formatted} {symbol}\n"
                 f"Total Shares: {Decimal(total_supply) / Decimal(10**18)}\n"
                 f"Share Price: 1 share = {share_price} {symbol}\n"
-                f"Network: {wallet.network_id}"
+                f"Network: {network_id}"
             )
 
         except ToolException:

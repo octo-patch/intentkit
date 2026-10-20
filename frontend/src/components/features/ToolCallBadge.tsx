@@ -3,6 +3,10 @@
 import { useState } from "react";
 import {
   CheckCircle,
+  CheckCircle2,
+  Circle,
+  CircleDotDashed,
+  ListTodo,
   XCircle,
   Loader2,
   ChevronDown,
@@ -12,13 +16,100 @@ import {
 import { cn } from "@/lib/utils";
 import type { ChatMessageToolCall } from "@/types/chat";
 
-interface ToolCallBadgeProps {
-  toolCall: ChatMessageToolCall;
-  isLoading?: boolean;
+interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
 }
 
-export function ToolCallBadge({ toolCall, isLoading }: ToolCallBadgeProps) {
+/** Parse write_todos call parameters; null when the shape is unexpected. */
+function parseTodos(parameters: Record<string, unknown>): TodoItem[] | null {
+  const raw = parameters?.todos;
+  if (!Array.isArray(raw)) return null;
+  const items: TodoItem[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") return null;
+    const { content, status } = entry as Record<string, unknown>;
+    if (typeof content !== "string") return null;
+    if (
+      status !== "pending" &&
+      status !== "in_progress" &&
+      status !== "completed"
+    ) {
+      return null;
+    }
+    items.push({ content, status });
+  }
+  return items;
+}
+
+/** Checklist rendering for write_todos calls, replacing the generic badge. */
+function TodoListBadge({
+  toolCall,
+  todos,
+}: {
+  toolCall: ChatMessageToolCall;
+  todos: TodoItem[];
+}) {
+  const isLoading = toolCall.success === undefined;
+  const doneCount = todos.filter((t) => t.status === "completed").length;
+
+  return (
+    <div className="w-full max-w-md rounded-lg border bg-muted/30 px-3 py-2 text-xs space-y-1.5">
+      <div className="flex items-center gap-1.5 font-medium text-muted-foreground">
+        {isLoading ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <ListTodo className="h-3 w-3" />
+        )}
+        <span>Todo</span>
+        <span className="ml-auto tabular-nums">
+          {doneCount}/{todos.length}
+        </span>
+      </div>
+      <ul className="space-y-1">
+        {todos.map((todo, index) => (
+          <li key={index} className="flex items-start gap-1.5">
+            {todo.status === "completed" ? (
+              <CheckCircle2 className="h-3.5 w-3.5 mt-px shrink-0 text-green-600 dark:text-green-400" />
+            ) : todo.status === "in_progress" ? (
+              <CircleDotDashed className="h-3.5 w-3.5 mt-px shrink-0 text-blue-600 dark:text-blue-400" />
+            ) : (
+              <Circle className="h-3.5 w-3.5 mt-px shrink-0 text-muted-foreground/50" />
+            )}
+            <span
+              className={cn(
+                todo.status === "completed" &&
+                  "text-muted-foreground line-through",
+                todo.status === "in_progress" && "font-medium",
+              )}
+            >
+              {todo.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+interface ToolCallBadgeProps {
+  toolCall: ChatMessageToolCall;
+}
+
+export function ToolCallBadge({ toolCall }: ToolCallBadgeProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  // A call without a result yet (pending frame) is still running.
+  const isLoading = toolCall.success === undefined;
+
+  // write_todos renders as a checklist; failed calls (e.g. the parallel-call
+  // guard) and unexpected shapes keep the generic badge with error details.
+  const todos =
+    toolCall.name === "write_todos" && toolCall.success !== false
+      ? parseTodos(toolCall.parameters)
+      : null;
+  if (todos && todos.length > 0) {
+    return <TodoListBadge toolCall={toolCall} todos={todos} />;
+  }
 
   // Extract tool display name (remove prefix like "twitter_", "web_", etc.)
   const getDisplayName = (name: string) => {
@@ -44,6 +135,7 @@ export function ToolCallBadge({ toolCall, isLoading }: ToolCallBadgeProps) {
 
   const displayName = getDisplayName(toolCall.name);
   const toolset = getToolset(toolCall.name);
+  const displayMessage = toolCall.display_message?.trim();
 
   return (
     <div className="inline-block">
@@ -67,8 +159,14 @@ export function ToolCallBadge({ toolCall, isLoading }: ToolCallBadgeProps) {
           <XCircle className="h-3 w-3" />
         )}
         <Wrench className="h-3 w-3 opacity-60" />
-        <span className="opacity-60">{toolset}:</span>
-        <span>{displayName}</span>
+        {displayMessage ? (
+          <span>{displayMessage}</span>
+        ) : (
+          <>
+            <span className="opacity-60">{toolset}:</span>
+            <span>{displayName}</span>
+          </>
+        )}
         {isExpanded ? (
           <ChevronUp className="h-3 w-3 ml-0.5" />
         ) : (
@@ -78,6 +176,16 @@ export function ToolCallBadge({ toolCall, isLoading }: ToolCallBadgeProps) {
 
       {isExpanded && (
         <div className="mt-2 p-3 rounded-lg bg-muted/50 border text-xs space-y-2 max-w-md">
+          {/* Tool name (badge shows the display message instead) */}
+          {displayMessage && (
+            <div>
+              <span className="font-medium text-muted-foreground">Tool: </span>
+              <span>
+                {toolset}: {displayName}
+              </span>
+            </div>
+          )}
+
           {/* Parameters */}
           {toolCall.parameters &&
             Object.keys(toolCall.parameters).length > 0 && (
@@ -124,13 +232,9 @@ export function ToolCallBadge({ toolCall, isLoading }: ToolCallBadgeProps) {
 
 interface ToolCallBadgeListProps {
   toolCalls: ChatMessageToolCall[];
-  isLoading?: boolean;
 }
 
-export function ToolCallBadgeList({
-  toolCalls,
-  isLoading,
-}: ToolCallBadgeListProps) {
+export function ToolCallBadgeList({ toolCalls }: ToolCallBadgeListProps) {
   if (!toolCalls || toolCalls.length === 0) return null;
 
   return (
@@ -139,7 +243,6 @@ export function ToolCallBadgeList({
         <ToolCallBadge
           key={toolCall.id || `tool-${index}`}
           toolCall={toolCall}
-          isLoading={isLoading && index === toolCalls.length - 1}
         />
       ))}
     </div>

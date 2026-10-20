@@ -127,7 +127,6 @@ async def test_withdraw_success():
         patch(
             "intentkit.core.credit.withdraw.get_agent", new_callable=AsyncMock
         ) as mock_get_agent,
-        patch("intentkit.models.agent_data.AgentData.get", new_callable=AsyncMock),
         patch(
             "intentkit.models.credit.CreditAccount.get_in_session",
             new_callable=AsyncMock,

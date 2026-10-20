@@ -6,10 +6,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
-from intentkit.tools.image import Config, ToolStates, available, get_tools
+from intentkit.tools.image import available, get_tools
 from intentkit.tools.image.base import ImageGenerationInput
-from intentkit.tools.image.gemini import GeminiImageFlash, GeminiImagePro
+from intentkit.tools.image.gemini import (
+    GeminiImageFlash,
+    GeminiImageFlashLite,
+    GeminiImagePro,
+)
 from intentkit.tools.image.gpt import GPTImageFlagship, GPTImageMini
 from intentkit.tools.image.grok import GrokImage
 from intentkit.tools.image.openrouter import FluxPro, Riverflow
@@ -22,6 +27,7 @@ def test_tool_metadata():
         (GPTImageMini, "image_gpt_mini", Decimal("20")),
         (GeminiImagePro, "image_gemini_pro", Decimal("130")),
         (GeminiImageFlash, "image_gemini_flash", Decimal("70")),
+        (GeminiImageFlashLite, "image_gemini_flash_lite", Decimal("35")),
         (GrokImage, "image_grok", Decimal("20")),
         (FluxPro, "image_flux_pro", Decimal("30")),
         (Riverflow, "image_riverflow", Decimal("20")),
@@ -48,7 +54,7 @@ def test_input_schema_valid():
 
 def test_input_schema_requires_prompt():
     """Test ImageGenerationInput requires prompt."""
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         ImageGenerationInput()  # pyright: ignore[reportCallIssue]
 
 
@@ -93,37 +99,13 @@ def test_available_with_no_keys():
 
 
 @pytest.mark.asyncio
-async def test_get_tools_filters_by_state():
-    """Test get_tools returns only enabled tools."""
-    config: Config = {
-        "enabled": True,
-        "states": ToolStates(
-            image_gpt="public",
-            image_gpt_mini="disabled",
-            image_gemini_pro="private",
-            image_gemini_flash="disabled",
-            image_grok="disabled",
-            image_flux_pro="public",
-            image_riverflow="disabled",
-            image_minimax="disabled",
-        ),
-    }
+async def test_get_tools_selects_by_name():
+    """get_tools returns exactly the requested tools; unknown names are skipped."""
+    tools = await get_tools(["image_gpt", "image_gemini_pro", "image_bogus"])
+    names = [t.name for t in tools]
+    assert names == ["image_gpt", "image_gemini_pro"]
 
-    # Public only
-    tools = await get_tools(config, is_private=False)
-    names = {s.name for s in tools}
-    assert "image_gpt" in names
-    assert "image_flux_pro" in names
-    assert "image_gpt_mini" not in names
-    assert "image_gemini_pro" not in names  # private, not included
-
-    # With private
-    tools = await get_tools(config, is_private=True)
-    names = {s.name for s in tools}
-    assert "image_gpt" in names
-    assert "image_gemini_pro" in names
-    assert "image_flux_pro" in names
-    assert "image_gpt_mini" not in names  # disabled
+    assert await get_tools([]) == []
 
 
 def test_native_key_checks():
@@ -197,3 +179,66 @@ async def test_openrouter_payload_uses_image_only_modalities():
             call_kwargs = mock_send.call_args.kwargs
             assert call_kwargs["modalities"] == ["image"]
             assert call_kwargs["model"] == "black-forest-labs/flux.2-pro"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_gpt_image_uses_images_endpoint():
+    """Regression: OpenRouter serves OpenAI image models only via the
+    dedicated images endpoint; chat completions rejects them with
+    "cannot be used with the chat/completions endpoint".
+    """
+    fake_b64 = base64.b64encode(b"png-data").decode()
+    response = SimpleNamespace(data=[SimpleNamespace(b64_json=fake_b64)])
+    mock_generate = AsyncMock(return_value=response)
+    mock_client = MagicMock(
+        images=MagicMock(generate_async=mock_generate),
+        chat=MagicMock(send_async=AsyncMock()),
+    )
+
+    with patch("intentkit.tools.image.base.config") as mock_config:
+        mock_config.openrouter_api_key = "test-key"
+        with patch(
+            "intentkit.tools.image.base.openrouter.OpenRouter",
+            return_value=mock_client,
+        ):
+            # Text-to-image: no input references
+            result = await GPTImageFlagship()._generate_via_openrouter("a cat", None)
+            assert result == b"png-data"
+            mock_client.chat.send_async.assert_not_called()
+            call_kwargs = mock_generate.call_args.kwargs
+            assert call_kwargs["model"] == "openai/gpt-image-2"
+            assert call_kwargs["prompt"] == "a cat"
+            assert call_kwargs["input_references"] is None
+
+            # Editing mode: input image goes along as a data-URL reference
+            result = await GPTImageMini()._generate_via_openrouter(
+                "make it blue", [b"input-image"]
+            )
+            assert result == b"png-data"
+            call_kwargs = mock_generate.call_args.kwargs
+            assert call_kwargs["model"] == "openai/gpt-image-1-mini"
+            refs = call_kwargs["input_references"]
+            assert len(refs) == 1
+            assert refs[0]["type"] == "image_url"
+            assert refs[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_openrouter_gpt_image_empty_response_raises():
+    """An images-endpoint response with no data raises a clean tool error."""
+    from langchain_core.tools.base import ToolException
+
+    mock_client = MagicMock(
+        images=MagicMock(
+            generate_async=AsyncMock(return_value=SimpleNamespace(data=[]))
+        ),
+    )
+
+    with patch("intentkit.tools.image.base.config") as mock_config:
+        mock_config.openrouter_api_key = "test-key"
+        with patch(
+            "intentkit.tools.image.base.openrouter.OpenRouter",
+            return_value=mock_client,
+        ):
+            with pytest.raises(ToolException, match="No image found"):
+                await GPTImageFlagship()._generate_via_openrouter("a cat", None)

@@ -33,6 +33,7 @@ class FirecrawlQueryIndexedContent(FirecrawlBaseTool):
     """
 
     name: str = "firecrawl_query_indexed_content"
+    title: str = "Query Indexed Content"
     description: str = (
         "Search previously indexed Firecrawl content to find relevant information."
     )
@@ -107,5 +108,5 @@ class FirecrawlQueryIndexedContent(FirecrawlBaseTool):
         except ToolException:
             raise
         except Exception as e:
-            logger.error("Error in FirecrawlQueryIndexedContent: %s", e, exc_info=True)
+            logger.exception("Error in FirecrawlQueryIndexedContent")
             raise ToolException(f"Failed to query indexed content: {e!s}")

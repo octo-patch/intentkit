@@ -10,11 +10,13 @@ from pydantic import BaseModel, Field
 from intentkit.tools.erc20.constants import ERC20_ABI
 from intentkit.tools.morpho.base import MorphoBaseTool
 from intentkit.tools.morpho.constants import METAMORPHO_ABI
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 
 class DepositInput(BaseModel):
     """Input schema for Morpho deposit."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     vault_address: str = Field(..., description="Morpho Vault address")
     token_address: str = Field(..., description="Token contract address to deposit")
     assets: str = Field(
@@ -32,12 +34,15 @@ class MorphoDeposit(MorphoBaseTool):
     """
 
     name: str = "morpho_deposit"
+    title: str = "Vault Deposit"
+    team_only: bool = True
     description: str = "Deposit assets into a Morpho Vault. Provide token_address as a contract address. Use exact amounts in whole units; do not convert."
     args_schema: ArgsSchema | None = DepositInput
 
     @override
     async def _arun(
         self,
+        wallet_address: str,
         vault_address: str,
         token_address: str,
         assets: str,
@@ -45,9 +50,9 @@ class MorphoDeposit(MorphoBaseTool):
         **kwargs: Any,
     ) -> str:
         try:
-            wallet = await self.get_unified_wallet()
+            wallet = await self.get_unified_wallet(wallet_address)
             self._validate_network(wallet.network_id)
-            w3 = self.web3_client()
+            w3 = wallet.w3
 
             assets_decimal = Decimal(assets)
             if assets_decimal <= Decimal("0"):

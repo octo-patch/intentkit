@@ -1,7 +1,7 @@
 """Team channel push functions.
 
-Send proactive messages to a team's default push channel (Telegram or WeChat)
-and record them in the chat message system.
+Send proactive messages to a team's default push channel (Telegram, WeChat,
+Lark, or Slack) and record them in the chat message system.
 """
 
 import base64
@@ -12,9 +12,11 @@ import httpx
 from epyxid import XID
 
 from intentkit.config.config import config
-from intentkit.core.team.channel import get_push_channel
+from intentkit.core.team.channel import build_channel_chat_id, get_push_channel
 from intentkit.models.chat import AuthorType
 from intentkit.models.team_channel import (
+    LarkChannelConfig,
+    SlackChannelConfig,
     TeamChannel,
     TeamChannelData,
     TelegramChannelConfig,
@@ -117,6 +119,57 @@ async def _send_wechat(
             )
 
 
+async def _send_lark(tenant_key: str, chat_id: str, text: str) -> bool:
+    """Push text to a Lark chat via the Go webhook service.
+
+    Lark is an ISV app, so replies need the app_ticket -> tenant-token chain that
+    only lives in the Go process; we POST to its internal ``/lark/push`` route
+    (gated by the shared secret) rather than minting a token here. Returns False
+    (no raise) when the reverse channel isn't configured, so push degrades
+    gracefully; a configured-but-failing send raises so the caller logs it.
+    """
+    if not config.lark_service_url or not config.lark_internal_secret:
+        logger.warning("Lark service URL/secret not configured; cannot push")
+        return False
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{config.lark_service_url.rstrip('/')}/lark/push",
+            json={"tenant_key": tenant_key, "chat_id": chat_id, "text": text},
+            headers={"X-Internal-Secret": config.lark_internal_secret},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Lark push failed: status {resp.status_code}")
+    return True
+
+
+async def _send_slack(bot_token: str, chat_id: str, text: str) -> None:
+    """Send a text message via the Slack Web API (chat.postMessage).
+
+    The bot token authenticates the call directly — unlike Lark, Slack needs no
+    token exchange.
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {bot_token}"},
+            json={"channel": chat_id, "text": text},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"Slack API error: {data.get('error')}")
+
+
+# Maps a channel_type to the AuthorType used when recording a pushed message in
+# chat history. Kept in sync with the send-dispatch branches in push_to_team.
+_PUSH_THREAD_TYPES = {
+    "telegram": AuthorType.TELEGRAM,
+    "wechat": AuthorType.WECHAT,
+    "lark": AuthorType.LARK,
+    "slack": AuthorType.SLACK,
+}
+
+
 async def push_to_team(team_id: str, text: str) -> bool:
     """Push a message to the team's default push channel.
 
@@ -161,7 +214,11 @@ async def push_to_team(team_id: str, text: str) -> bool:
                 try:
                     wx_data = WechatChannelData.model_validate(channel_data.data)
                 except Exception:
-                    pass
+                    logger.debug(
+                        "Invalid WeChat channel data for team %s",
+                        team_id,
+                        exc_info=True,
+                    )
             if not wx_data or not wx_data.context_token:
                 logger.warning(
                     "No WeChat context_token for team %s (no messages received yet?)",
@@ -177,6 +234,28 @@ async def push_to_team(team_id: str, text: str) -> bool:
                 wx_data.context_token,
                 _rewrite_for_wechat(text),
             )
+
+        elif channel_type == "lark":
+            try:
+                lark_config = LarkChannelConfig.model_validate(channel.config)
+            except Exception:
+                logger.warning("Invalid Lark config for team %s", team_id)
+                return False
+            if not await _send_lark(lark_config.tenant_key, raw_chat_id, text):
+                return False
+
+        elif channel_type == "slack":
+            try:
+                slack_config = SlackChannelConfig.model_validate(channel.config)
+            except Exception:
+                logger.warning("Invalid Slack config for team %s", team_id)
+                return False
+
+            await _send_slack(
+                slack_config.bot_token,
+                raw_chat_id,
+                text,
+            )
         else:
             logger.warning("Unknown channel type %s for team %s", channel_type, team_id)
             return False
@@ -185,12 +264,8 @@ async def push_to_team(team_id: str, text: str) -> bool:
         try:
             from intentkit.core.chat import append_agent_message
 
-            if channel_type == "telegram":
-                lead_chat_id = f"tg_team:{team_id}:{raw_chat_id}"
-                thread_type = AuthorType.TELEGRAM
-            else:
-                lead_chat_id = f"wx_team:{team_id}:{raw_chat_id}"
-                thread_type = AuthorType.WECHAT
+            lead_chat_id = build_channel_chat_id(channel_type, team_id, raw_chat_id)
+            thread_type = _PUSH_THREAD_TYPES[channel_type]
 
             await append_agent_message(
                 agent_id=f"team-{team_id}",

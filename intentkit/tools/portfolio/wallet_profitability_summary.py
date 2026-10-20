@@ -32,6 +32,7 @@ class WalletProfitabilitySummary(PortfolioBaseTool):
     """
 
     name: str = "portfolio_wallet_profitability_summary"
+    title: str = "Wallet Profitability Summary"
     description: str = "Get wallet profitability summary (total P&L, trade volume)."
     args_schema: ArgsSchema | None = WalletProfitabilitySummaryInput
 
@@ -75,10 +76,9 @@ class WalletProfitabilitySummary(PortfolioBaseTool):
             return await self._make_request(
                 method="GET", endpoint=endpoint, api_key=api_key, params=params
             )
-        except Exception as e:
-            logger.error(
-                f"wallet_profitability_summary.py: Error fetching profitability summary: {e}",
-                exc_info=True,
+        except Exception:
+            logger.exception(
+                "wallet_profitability_summary.py: Error fetching profitability summary"
             )
             return {
                 "error": "An error occurred while fetching profitability summary. Please try again later."

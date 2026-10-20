@@ -14,9 +14,12 @@ from intentkit.core.system_tools.get_post import GetPostTool
 from intentkit.core.system_tools.read_webpage import ReadWebpageCloudflareTool
 from intentkit.core.system_tools.recent_activities import RecentActivitiesTool
 from intentkit.core.system_tools.recent_posts import RecentPostsTool
+from intentkit.core.system_tools.record_memory import RecordMemoryTool
 from intentkit.core.system_tools.search_web import WebSearchTool
 from intentkit.core.system_tools.store_image import StoreImageTool
-from intentkit.core.system_tools.update_memory import UpdateMemoryTool
+from intentkit.core.system_tools.ui_ask_user import UIAskUserTool
+from intentkit.core.system_tools.ui_show_card import UIShowCardTool
+from intentkit.core.system_tools.write_todos import WriteTodosTool
 
 __all__ = [
     "SystemTool",
@@ -28,9 +31,12 @@ __all__ = [
     "read_webpage_cloudflare",
     "recent_activities",
     "recent_posts",
+    "record_memory",
     "store_image",
-    "update_memory",
+    "ui_ask_user",
+    "ui_show_card",
     "web_search",
+    "write_todos",
 ]
 
 # Cached singleton instances — import these directly where needed.
@@ -42,6 +48,9 @@ get_post = GetPostTool()
 read_webpage_cloudflare = ReadWebpageCloudflareTool()
 recent_activities = RecentActivitiesTool()
 recent_posts = RecentPostsTool()
+record_memory = RecordMemoryTool()
 store_image = StoreImageTool()
-update_memory = UpdateMemoryTool()
+ui_ask_user = UIAskUserTool()
+ui_show_card = UIShowCardTool()
 web_search = WebSearchTool()
+write_todos = WriteTodosTool()

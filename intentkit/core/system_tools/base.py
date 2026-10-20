@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any, cast, override
 
 from langchain_core.tools import BaseTool
-from langchain_core.tools.base import ToolException
+from langchain_core.tools.base import ToolException, ToolExceptionHandlerOutput
 from langgraph.runtime import get_runtime
 from pydantic import ValidationError
 from pydantic.v1 import ValidationError as ValidationErrorV1
@@ -24,9 +24,9 @@ class SystemTool(BaseTool, metaclass=ABCMeta):
     """
 
     # Ensure ToolException is caught and returned as a message to the LLM
-    handle_tool_error: bool | str | Callable[[ToolException], str] | None = lambda e: (
-        f"tool error: {e}"
-    )
+    handle_tool_error: (
+        bool | str | Callable[[ToolException], ToolExceptionHandlerOutput] | None
+    ) = lambda e: f"tool error: {e}"
     """Handle the content of the ToolException thrown."""
 
     # Ensure ValidationError is caught and returned as a message to the LLM
@@ -35,7 +35,45 @@ class SystemTool(BaseTool, metaclass=ABCMeta):
     ) = lambda e: f"validation error: {e}"
     """Handle the content of the ValidationError thrown."""
 
-    logger: logging.Logger = logging.getLogger(__name__)
+    @property
+    def logger(self) -> logging.Logger:
+        """Logger named after the concrete tool's own module.
+
+        This used to be a class attribute, which stamped every tool's records
+        with ``intentkit.core.system_tools.base``. ``record.name`` is the only
+        per-tool identifier the JSON formatter emits (utils/logging.py), so a
+        shared logger erased which tool actually logged the line.
+        """
+        return logging.getLogger(type(self).__module__)
+
+    team_only: bool = False
+    """Tools that act with the agent's identity or assets (publishing,
+    spending) are only bound when the owning team runs the agent; guests of
+    a published agent never see them. Runtime code must still call
+    ``ensure_own_team()`` as a second line of defense."""
+
+    interactive_only: bool = False
+    """Tools whose output only makes sense with a live user watching the
+    conversation (UI cards, choice buttons, the todo checklist).
+    ToolBindingMiddleware drops them for cron-triggered runs (entrypoint
+    TRIGGER) and sub-agent calls, where nobody is watching."""
+
+    requires_memory_scope: bool = False
+    """Tools that read/write the conversation's scoped memories only work
+    when the conversation resolves at least one memory scope.
+    ToolBindingMiddleware drops them from sub-agent runs (stateless by
+    design) and teamless anonymous conversations, where every call would
+    fail."""
+
+    def ensure_own_team(self) -> None:
+        """Refuse execution unless the owning team is running the agent."""
+        context = self.get_context()
+        if not context.is_own_team:
+            raise ToolException(
+                f"{self.name} is not allowed in this conversation: it acts "
+                "with the agent's identity and can only be used by the "
+                "agent's own team."
+            )
 
     @override
     def _run(self, *args: Any, **kwargs: Any) -> Any:

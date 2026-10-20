@@ -8,9 +8,11 @@ from langchain_core.tools import ArgsSchema
 from pydantic import BaseModel, Field
 
 from intentkit.core.agent.management import patch_agent
+from intentkit.core.lead.constants import SYSTEM_PROMPT_FIELD_DESCRIPTION
 from intentkit.core.lead.service import verify_agent_in_team
 from intentkit.core.lead.tools.base import LeadTool
 from intentkit.models.agent import AgentUpdate
+from intentkit.models.llm import ReasoningEffort
 
 
 class UpdateTeamAgentInput(BaseModel):
@@ -18,31 +20,33 @@ class UpdateTeamAgentInput(BaseModel):
 
     agent_id: str = Field(description="The ID of the agent to update")
     name: str | None = Field(default=None, description="Display name")
-    purpose: str | None = Field(default=None, description="Purpose or role")
-    personality: str | None = Field(default=None, description="Personality traits")
-    principles: str | None = Field(default=None, description="Principles or values")
-    model: str | None = Field(default=None, description="LLM model ID")
-    prompt: str | None = Field(default=None, description="Base system prompt")
-    prompt_append: str | None = Field(
-        default=None, description="Additional system prompt"
+    system_prompt: str | None = Field(
+        default=None, description=SYSTEM_PROMPT_FIELD_DESCRIPTION, max_length=200000
     )
-    temperature: float | None = Field(default=None, description="Temperature (0.0~2.0)")
-    tools: dict[str, Any] | None = Field(
-        default=None, description="Tool configurations"
+    description: str | None = Field(
+        default=None,
+        max_length=1000,
+        description=(
+            "Short public summary of what the agent does; shown in agent "
+            "listings and used to describe it when wired as a sub-agent."
+        ),
+    )
+    model: str | None = Field(default=None, description="LLM model ID")
+    reasoning_effort: ReasoningEffort | None = Field(
+        default=None,
+        description="Reasoning effort; unset follows the model default",
+    )
+    tools: list[str] | None = Field(
+        default=None, description="List of enabled tool names"
     )
     slug: str | None = Field(default=None, description="URL-friendly slug")
     search_internet: bool | None = Field(
         default=None, description="Enable internet search"
     )
-    super_mode: bool | None = Field(default=None, description="Enable super mode")
-    enable_todo: bool | None = Field(default=None, description="Enable todo list")
     enable_activity: bool | None = Field(
         default=None, description="Enable activity tools"
     )
     enable_post: bool | None = Field(default=None, description="Enable post tools")
-    enable_long_term_memory: bool | None = Field(
-        default=None, description="Enable long-term memory"
-    )
     sub_agents: list[str] | None = Field(
         default=None, description="Sub-agent IDs or slugs"
     )
@@ -83,12 +87,12 @@ class UpdateTeamAgentOutput(BaseModel):
 
 
 class UpdateTeamAgent(LeadTool):
-    """Tool to update (patch) a team agent. Changes are directly deployed."""
+    """Tool to update (patch) a team agent. Changes take effect immediately."""
 
     name: str = "lead_update_team_agent"
     description: str = (
         "Update a team agent with partial changes. Only provided fields will be updated. "
-        "Changes are directly deployed (no draft flow). "
+        "Changes take effect immediately. "
         "The update function is efficient and safe, only updating fields you explicitly provide."
     )
     args_schema: ArgsSchema | None = UpdateTeamAgentInput
@@ -98,21 +102,15 @@ class UpdateTeamAgent(LeadTool):
         self,
         agent_id: str,
         name: str | None = None,
-        purpose: str | None = None,
-        personality: str | None = None,
-        principles: str | None = None,
+        system_prompt: str | None = None,
+        description: str | None = None,
         model: str | None = None,
-        prompt: str | None = None,
-        prompt_append: str | None = None,
-        temperature: float | None = None,
-        tools: dict[str, Any] | None = None,
+        reasoning_effort: ReasoningEffort | None = None,
+        tools: list[str] | None = None,
         slug: str | None = None,
         search_internet: bool | None = None,
-        super_mode: bool | None = None,
-        enable_todo: bool | None = None,
         enable_activity: bool | None = None,
         enable_post: bool | None = None,
-        enable_long_term_memory: bool | None = None,
         sub_agents: list[str] | None = None,
         sub_agent_prompt: str | None = None,
         visibility: int | None = None,
@@ -133,21 +131,15 @@ class UpdateTeamAgent(LeadTool):
         update_data: dict[str, Any] = {}
         local_vars = {
             "name": name,
-            "purpose": purpose,
-            "personality": personality,
-            "principles": principles,
+            "system_prompt": system_prompt,
+            "description": description,
             "model": model,
-            "prompt": prompt,
-            "prompt_append": prompt_append,
-            "temperature": temperature,
+            "reasoning_effort": reasoning_effort,
             "tools": tools,
             "slug": slug,
             "search_internet": search_internet,
-            "super_mode": super_mode,
-            "enable_todo": enable_todo,
             "enable_activity": enable_activity,
             "enable_post": enable_post,
-            "enable_long_term_memory": enable_long_term_memory,
             "sub_agents": sub_agents,
             "sub_agent_prompt": sub_agent_prompt,
             "visibility": visibility,
@@ -163,19 +155,15 @@ class UpdateTeamAgent(LeadTool):
             if value is not None:
                 update_data[key] = value
 
-        # AgentUpdate has name with default=None, so it's safe to omit
+        # AgentUpdate has name with default=None, so it's safe to omit.
+        # patch_agent invalidates the team lead cache so the injected roster
+        # reflects any name/slug/description change.
         agent_update = AgentUpdate.model_validate(update_data)
         updated_agent, _ = await patch_agent(agent_id, agent_update)
 
-        # Invalidate lead cache when purpose changes, so lead agent rebuilds sub-agents list
-        if purpose is not None:
-            from intentkit.core.lead.cache import invalidate_lead_cache
-
-            invalidate_lead_cache(context.team_id)
-
         return UpdateTeamAgentOutput(
             agent_id=updated_agent.id,
-            message=f"Agent '{updated_agent.name}' updated and deployed successfully.",
+            message=f"Agent '{updated_agent.name}' updated successfully; changes are already live.",
         )
 
 

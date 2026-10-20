@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 from enum import IntEnum
-from typing import Annotated, Any, ClassVar, Literal
+from typing import Annotated, ClassVar
 
 from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic import Field as PydanticField
 
+from intentkit.models.llm import ReasoningEffort, resolve_model_id
 from intentkit.models.llm_picker import pick_default_model
 
 
@@ -46,28 +47,15 @@ class AgentCore(BaseModel):
             description="Avatar of the agent",
         ),
     ] = None
-    purpose: Annotated[
+    description: Annotated[
         str | None,
         PydanticField(
             default=None,
-            description="Purpose or role of the agent",
-            max_length=20000,
-        ),
-    ] = None
-    personality: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="Personality traits of the agent",
-            max_length=20000,
-        ),
-    ] = None
-    principles: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="Principles or values of the agent",
-            max_length=20000,
+            description=(
+                "Short public summary of what the agent does, shown in agent "
+                "listings and used to describe it when wired as a sub-agent. "
+                "Not injected into the agent's own prompt."
+            ),
         ),
     ] = None
     # AI part
@@ -83,80 +71,38 @@ class AgentCore(BaseModel):
     def _set_model_default(cls, v: str | None) -> str:
         if v is None or v == "":
             return pick_default_model()
-        return v
+        # Retired ids (see legacy_ids in llm.yaml) normalize to the live
+        # series id on every read and write, so agents saved before a model
+        # bump show the current entry in the picker without a data migration.
+        # Resolution only sees providers configured in this process, so a
+        # save made where the native provider is missing pins the agent to
+        # the OpenRouter twin — the same route it would have taken at runtime.
+        return resolve_model_id(v)
 
-    prompt: Annotated[
+    reasoning_effort: Annotated[
+        ReasoningEffort | None,
+        PydanticField(
+            default=None,
+            description=(
+                "Reasoning/thinking effort for the model. Leave unset to use "
+                "the model's recommended default. Values are automatically "
+                "adapted to the levels the selected model supports."
+            ),
+        ),
+    ] = None
+    system_prompt: Annotated[
         str | None,
         PydanticField(
             default=None,
-            description="Base system prompt that defines the agent's behavior and capabilities",
-            max_length=20000,
+            description="System prompt that defines the agent's purpose, personality, principles, and behavior",
+            max_length=200000,
         ),
     ] = None
-    prompt_append: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="Additional system prompt that has higher priority than the base prompt",
-            max_length=20000,
-        ),
-    ] = None
-    temperature: Annotated[
-        float | None,
-        PydanticField(
-            default=0.7,
-            description="The randomness of the generated results is such that the higher the number, the more creative the results will be. However, this also makes them wilder and increases the likelihood of errors. For creative tasks, you can adjust it to above 1, but for rigorous tasks, such as quantitative trading, it's advisable to set it lower, around 0.2. (0.0~2.0)",
-            ge=0.0,
-            le=2.0,
-        ),
-    ] = 0.7
-    frequency_penalty: Annotated[
-        float | None,
-        PydanticField(
-            default=0.0,
-            description="The frequency penalty is a measure of how much the AI is allowed to repeat itself. A lower value means the AI is more likely to repeat previous responses, while a higher value means the AI is more likely to generate new content. For creative tasks, you can adjust it to 1 or a bit higher. (-2.0~2.0)",
-            ge=-2.0,
-            le=2.0,
-        ),
-    ] = 0.0
-    presence_penalty: Annotated[
-        float | None,
-        PydanticField(
-            default=0.0,
-            description="The presence penalty is a measure of how much the AI is allowed to deviate from the topic. A higher value means the AI is more likely to deviate from the topic, while a lower value means the AI is more likely to follow the topic. For creative tasks, you can adjust it to 1 or a bit higher. (-2.0~2.0)",
-            ge=-2.0,
-            le=2.0,
-        ),
-    ] = 0.0
-    wallet_provider: Annotated[
-        Literal["cdp", "native", "readonly", "safe", "privy", "none"] | None,
-        PydanticField(
-            default=None,
-            description="Provider of the agent's wallet",
-        ),
-    ] = None
-    network_id: Annotated[
-        Literal[
-            "base-mainnet",
-            "ethereum-mainnet",
-            "polygon-mainnet",
-            "arbitrum-mainnet",
-            "optimism-mainnet",
-            "bnb-mainnet",
-            "solana",
-            "base-sepolia",
-        ]
-        | None,
-        PydanticField(
-            default="base-mainnet",
-            description="Network identifier",
-        ),
-    ] = "base-mainnet"
     tools: Annotated[
-        dict[str, Any] | None,
+        list[str] | None,
         PydanticField(
             default=None,
-            description="Dict of tools and their corresponding configurations",
+            description="List of enabled tool names",
         ),
     ] = None
     search_internet: Annotated[
@@ -166,20 +112,6 @@ class AgentCore(BaseModel):
             description="Enable LLM native internet search for this agent",
         ),
     ] = True
-    super_mode: Annotated[
-        bool,
-        PydanticField(
-            default=False,
-            description="Enable super mode with higher recursion limit for this agent",
-        ),
-    ] = False
-    enable_todo: Annotated[
-        bool,
-        PydanticField(
-            default=False,
-            description="Enable todo list middleware for task planning and tracking in complex multi-step tasks",
-        ),
-    ] = False
     enable_activity: Annotated[
         bool | None,
         PydanticField(
@@ -192,13 +124,6 @@ class AgentCore(BaseModel):
         PydanticField(
             default=None,
             description="Enable post tools (create post, get post, recent posts)",
-        ),
-    ] = None
-    enable_long_term_memory: Annotated[
-        bool | None,
-        PydanticField(
-            default=None,
-            description="Enable long-term memory for the agent",
         ),
     ] = None
     sub_agents: Annotated[
@@ -231,11 +156,6 @@ class AgentCore(BaseModel):
     @classmethod
     def _set_search_internet_default(cls, v: bool | None) -> bool:
         return True if v is None else v
-
-    @field_validator("super_mode", "enable_todo", mode="before")
-    @classmethod
-    def _set_bool_false_default(cls, v: bool | None) -> bool:
-        return False if v is None else v
 
     def hash(self) -> str:
         """

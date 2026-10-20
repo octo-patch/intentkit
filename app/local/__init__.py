@@ -8,9 +8,12 @@ from app.local.chat import chat_router
 from app.local.content import content_router
 from app.local.health import health_router
 from app.local.lead import lead_router
+from app.local.link import link_router
+from app.local.memory import memory_router
 from app.local.metadata import metadata_router
 from app.local.public import public_router
 from app.local.schema import schema_router
+from app.local.wallet import wallet_router
 from app.local.wechat import wechat_router
 
 __all__ = [
@@ -20,8 +23,11 @@ __all__ = [
     "content_router",
     "health_router",
     "lead_router",
+    "link_router",
+    "memory_router",
+    "metadata_router",
     "public_router",
     "schema_router",
-    "metadata_router",
+    "wallet_router",
     "wechat_router",
 ]

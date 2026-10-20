@@ -1,238 +1,67 @@
 "use client";
-import React, { useState, useMemo, useCallback } from "react";
+import { useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { customizeValidator } from "@rjsf/validator-ajv8";
-import Form, { IChangeEvent } from "@rjsf/core";
-import { RJSFSchema, RegistryFieldsType } from "@rjsf/utils";
 import { agentApi } from "@/lib/api";
-import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
-import { widgets, BaseInputTemplate } from "@/app/agents/new/widgets";
-import { templates } from "@/app/agents/new/templates";
-import { ToolsField } from "@/app/agents/new/ToolsField";
+import {
+    AgentForm,
+    AgentFormValues,
+    projectAgentToForm,
+    validateAgentForm,
+} from "../../new/AgentForm";
+import { cleanAgentPayload } from "../../new/formUtils";
 import { toast } from "@/hooks/use-toast";
 import { useAgentSlugRewrite } from "@/hooks/useAgentSlugRewrite";
-
-// Custom validator with options to handle optional fields properly
-const validator = customizeValidator({
-    ajvOptionsOverrides: {
-        removeAdditional: true,
-    },
-});
-
-// Custom fields for RJSF
-const fields: RegistryFieldsType = {
-    ToolsField: ToolsField,
-};
-
-function generateUiSchema(schema: Record<string, unknown> | undefined, agentData?: Record<string, unknown> | null) {
-    const uiSchema: Record<string, unknown> = {
-        "ui:title": " ", // Hide default title
-        "ui:description": " ", // Hide default description
-    };
-
-    if (schema && typeof schema.properties === "object" && schema.properties !== null) {
-        const properties = schema.properties as Record<string, Record<string, unknown>>;
-        Object.keys(properties).forEach((key) => {
-            const property = properties[key];
-            const uiProperty: Record<string, unknown> = {};
-
-            // Use custom ToolsField for tools
-            if (key === "tools") {
-                uiProperty["ui:field"] = "ToolsField";
-            }
-
-            // Make id field read-only in edit mode
-            if (key === "id") {
-                uiProperty["ui:readonly"] = true;
-            }
-
-            // Make slug field read-only if already set
-            if (key === "slug" && agentData?.slug) {
-                uiProperty["ui:readonly"] = true;
-            }
-
-            if (property["x-component"] === "category-select") {
-                uiProperty["ui:widget"] = "ModelSelectWidget";
-            }
-
-            if (typeof property["x-placeholder"] === "string") {
-                uiProperty["ui:placeholder"] = property["x-placeholder"];
-            }
-
-            if (typeof property.maxLength === "number" && property.maxLength > 200) {
-                uiProperty["ui:widget"] = "textarea";
-            }
-
-            // Use StringArrayWidget for string array fields
-            if (property.type === "array" && (property.items as Record<string, unknown>)?.type === "string") {
-                uiProperty["ui:widget"] = "StringArrayWidget";
-            }
-
-            if (Object.keys(uiProperty).length > 0) {
-                uiSchema[key] = uiProperty;
-            }
-        });
-    }
-
-    return uiSchema;
-}
 
 export default function EditAgentPage() {
     const router = useRouter();
     const params = useParams();
     const agentId = params.id as string;
-    
+
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [errors, setErrors] = useState<
+        Partial<Record<keyof AgentFormValues, string>>
+    >({});
 
-    // Fetch the agent schema
-    const { data: schema, isLoading: isSchemaLoading, error: schemaError } = useQuery({
-        queryKey: ["agent-schema"],
-        queryFn: agentApi.getSchema,
-    });
-
-    // Fetch the existing agent data
-    const { data: agent, isLoading: isAgentLoading, error: agentError } = useQuery({
+    const {
+        data: agent,
+        isLoading: isAgentLoading,
+        error: agentError,
+    } = useQuery({
         queryKey: ["agent-editable", agentId],
         queryFn: () => agentApi.getEditableById(agentId),
         enabled: !!agentId,
     });
 
-    useAgentSlugRewrite(agentId, (agent as Record<string, unknown> | undefined)?.slug as string | undefined);
+    useAgentSlugRewrite(agentId, agent?.slug);
 
-    // Resolve the actual agent ID (URL param may be a slug)
-    const resolvedId = (agent as Record<string, unknown> | undefined)?.id as string | undefined;
+    const resolvedId = agent?.id;
 
-    // Filter agent data to only include fields defined in the schema
-    const filterBySchema = (
-        agentData: Record<string, unknown>,
-        schemaData: Record<string, unknown>
-    ): Record<string, unknown> => {
-        if (!schemaData.properties || typeof schemaData.properties !== "object") {
-            return {};
+    const [values, setValues] = useState<AgentFormValues>({});
+
+    // Seed form state once the agent has loaded (and again if it reloads).
+    // Syncing during render — guarded by the last applied source — avoids an
+    // effect's extra commit + cascading render.
+    const [loadedAgent, setLoadedAgent] = useState<unknown>(undefined);
+    if (loadedAgent !== agent) {
+        setLoadedAgent(agent);
+        if (agent) {
+            setValues(projectAgentToForm(agent));
         }
-        const schemaProperties = schemaData.properties as Record<string, unknown>;
-        const filtered: Record<string, unknown> = {};
-        
-        for (const key of Object.keys(schemaProperties)) {
-            if (key in agentData) {
-                filtered[key] = agentData[key];
-            }
-        }
-        
-        return filtered;
-    };
+    }
 
-    // Initialize formData from agent data, filtered by schema
-    const [formData, setFormData] = useState<Record<string, unknown>>({});
-    
-    // Update formData when agent data and schema are loaded
-    React.useEffect(() => {
-        if (agent && schema) {
-            const filteredData = filterBySchema(
-                agent as unknown as Record<string, unknown>,
-                schema
-            );
-            setFormData(filteredData);
-        }
-    }, [agent, schema]);
+    const handleSubmit = async () => {
+        const found = validateAgentForm(values);
+        setErrors(found);
+        if (Object.keys(found).length > 0) return;
 
-    const uiSchema = useMemo(() => generateUiSchema(schema, agent as Record<string, unknown> | null | undefined), [schema, agent]);
-
-    // Clean up tools data before submission:
-    // - Remove toolsets where enabled=false
-    // - Remove tool states that are 'disabled'
-    // - Remove tools that are not defined in the schema (handles renamed tools)
-    const cleanToolsData = (data: Record<string, unknown>, schemaData: Record<string, unknown> | undefined): Record<string, unknown> => {
-        const tools = data.tools as Record<string, { enabled?: boolean; states?: Record<string, string> }> | undefined;
-        if (!tools) return data;
-
-        // Extract valid tool keys from the schema for each toolset
-        const getValidToolsForToolset = (categoryKey: string): Set<string> | null => {
-            if (!schemaData?.properties) return null;
-            const schemaProperties = schemaData.properties as Record<string, Record<string, unknown>>;
-            const toolsSchema = schemaProperties.tools;
-            if (!toolsSchema?.properties) return null;
-            const toolsetsSchema = toolsSchema.properties as Record<string, Record<string, unknown>>;
-            const categorySchema = toolsetsSchema[categoryKey];
-            if (!categorySchema?.properties) return null;
-            const categoryProperties = categorySchema.properties as Record<string, Record<string, unknown>>;
-            const statesSchema = categoryProperties.states;
-            if (!statesSchema?.properties) return null;
-            const statesProperties = statesSchema.properties as Record<string, unknown>;
-            return new Set(Object.keys(statesProperties));
-        };
-
-        // Extract valid toolset keys from the schema
-        const getValidCategories = (): Set<string> | null => {
-            if (!schemaData?.properties) return null;
-            const schemaProperties = schemaData.properties as Record<string, Record<string, unknown>>;
-            const toolsSchema = schemaProperties.tools;
-            if (!toolsSchema?.properties) return null;
-            const toolsetsSchema = toolsSchema.properties as Record<string, unknown>;
-            return new Set(Object.keys(toolsetsSchema));
-        };
-
-        const validCategories = getValidCategories();
-        const cleanedTools: Record<string, { enabled?: boolean; states?: Record<string, string> }> = {};
-        for (const [categoryKey, categoryData] of Object.entries(tools)) {
-            // Skip toolsets that are explicitly disabled
-            if (categoryData.enabled === false) continue;
-
-            // Skip toolsets not in schema (removed toolsets)
-            if (validCategories && !validCategories.has(categoryKey)) {
-                console.log(`[cleanToolsData] Removing toolset not in schema: ${categoryKey}`);
-                continue;
-            }
-
-            // Get valid tools for this toolset
-            const validTools = getValidToolsForToolset(categoryKey);
-
-            // Clean up states - only keep non-disabled tools that exist in schema
-            const states = categoryData.states || {};
-            const cleanedStates: Record<string, string> = {};
-            for (const [toolKey, toolValue] of Object.entries(states)) {
-                // Skip disabled tools
-                if (toolValue === 'disabled') continue;
-
-                // Skip tools not in schema (old/renamed tools)
-                if (validTools && !validTools.has(toolKey)) {
-                    console.log(`[cleanToolsData] Removing tool not in schema: ${categoryKey}.${toolKey}`);
-                    continue;
-                }
-
-                cleanedStates[toolKey] = toolValue;
-            }
-
-            // Only include toolset if it's enabled
-            if (categoryData.enabled === true) {
-                cleanedTools[categoryKey] = {
-                    enabled: true,
-                    states: Object.keys(cleanedStates).length > 0 ? cleanedStates : undefined,
-                };
-            }
-        }
-
-        const restData = { ...data };
-        if ("autonomous" in restData) {
-            delete (restData as Record<string, unknown>).autonomous;
-        }
-        return {
-            ...restData,
-            tools: Object.keys(cleanedTools).length > 0 ? cleanedTools : undefined,
-        };
-    };
-
-    const handleSubmit = async ({ formData }: IChangeEvent<Record<string, unknown>>) => {
-        if (!formData) return;
         setIsSubmitting(true);
         setError(null);
         try {
-            const cleanedData = cleanToolsData(formData, schema);
-            await agentApi.patch(resolvedId || agentId, cleanedData);
+            await agentApi.patch(resolvedId || agentId, cleanAgentPayload(values, "edit"));
             toast({
                 title: "Agent updated",
                 description: "Your agent has been updated successfully.",
@@ -247,49 +76,7 @@ export default function EditAgentPage() {
         }
     };
 
-    const log = (type: string) => console.log.bind(console, type);
-
-    // Transform errors to filter out optional field validation errors
-    // and log validation data for debugging
-    const transformErrors = useCallback(
-        (errors: ReturnType<typeof validator.validateFormData>["errors"]) => {
-            console.log("[RJSF Validator] Form data before validation:", JSON.stringify(formData, null, 2));
-            console.log("[RJSF Validator] Schema:", JSON.stringify(schema, null, 2));
-            console.log("[RJSF Validator] Raw validation errors:", errors);
-            
-            // Get required fields from schema
-            const requiredFields = (schema?.required as string[]) || [];
-            
-            // Filter out errors for optional fields with empty/undefined values
-            const filteredErrors = errors.filter((error) => {
-                // Extract field name from the error property path
-                const fieldName = error.property?.replace(/^\./, "").split(".")[0] || "";
-                
-                // If the field is required, keep the error
-                if (requiredFields.includes(fieldName)) {
-                    return true;
-                }
-                
-                // If the error is about type mismatch for an optional field
-                // and the value is empty/undefined, filter it out
-                if (error.name === "type") {
-                    const fieldValue = (formData as Record<string, unknown>)[fieldName];
-                    if (fieldValue === undefined || fieldValue === null || fieldValue === "") {
-                        console.log(`[RJSF Validator] Filtering out type error for optional empty field: ${fieldName}`);
-                        return false;
-                    }
-                }
-                
-                return true;
-            });
-            
-            console.log("[RJSF Validator] Filtered errors:", filteredErrors);
-            return filteredErrors;
-        },
-        [formData, schema]
-    );
-
-    if (isSchemaLoading || isAgentLoading) {
+    if (isAgentLoading) {
         return (
             <div className="container py-10">
                 <div className="flex justify-center">
@@ -299,11 +86,11 @@ export default function EditAgentPage() {
         );
     }
 
-    if (schemaError || agentError) {
+    if (agentError) {
         return (
             <div className="container py-10">
                 <div className="text-red-500">
-                    Error loading data: {(schemaError as Error)?.message || (agentError as Error)?.message}
+                    Error loading data: {(agentError as Error)?.message}
                 </div>
             </div>
         );
@@ -331,26 +118,15 @@ export default function EditAgentPage() {
                         {error}
                     </div>
                 )}
-                <Form
-                    schema={schema as RJSFSchema}
-                    uiSchema={uiSchema}
-                    validator={validator}
-                    formData={formData}
-                    onChange={(e) => setFormData(e.formData || {})}
+                <AgentForm
+                    values={values}
+                    onChange={setValues}
                     onSubmit={handleSubmit}
-                    onError={log("errors")}
-                    transformErrors={transformErrors}
-                    className="space-y-6"
-                    widgets={widgets}
-                    fields={fields}
-                    templates={{ ...templates, BaseInputTemplate }}
-                >
-                    <div className="flex justify-end pt-4">
-                        <Button type="submit" disabled={isSubmitting}>
-                            {isSubmitting ? "Saving..." : "Save Changes"}
-                        </Button>
-                    </div>
-                </Form>
+                    isSubmitting={isSubmitting}
+                    submitLabel={isSubmitting ? "Saving..." : "Save Changes"}
+                    readOnlyFields={["slug"]}
+                    errors={errors}
+                />
             </div>
         </div>
     );

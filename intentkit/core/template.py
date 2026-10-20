@@ -1,7 +1,6 @@
 """Template operations for agent templates."""
 
 import logging
-from typing import TYPE_CHECKING
 
 from epyxid import XID
 from pydantic import BaseModel
@@ -11,9 +10,6 @@ from sqlalchemy import select
 from intentkit.config.db import get_session
 from intentkit.models.agent import Agent, AgentCore, AgentTable, AgentVisibility
 from intentkit.models.template import Template, TemplateTable
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +50,9 @@ async def render_agent(agent: Agent) -> Agent:
     """Render an agent by applying its template's AgentCore fields.
 
     This function reads the template_id from the agent, fetches the template,
-    and overlays the template's AgentCore fields onto the agent. The `name`
-    and `picture` fields are only overwritten if the agent doesn't already
-    have them set.
+    and overlays the template's AgentCore fields onto the agent. The `name`,
+    `picture`, and `description` fields are only overwritten if the agent
+    doesn't already have them set.
 
     Args:
         agent: The agent to render with template data
@@ -100,8 +96,8 @@ async def render_agent(agent: Agent) -> Agent:
     for field_name in AgentCore.model_fields:
         template_value = getattr(template, field_name, None)
 
-        # Special handling for name and picture: only overwrite if agent doesn't have them
-        if field_name in ("name", "picture"):
+        # Special handling for identity fields: only overwrite if agent doesn't have them
+        if field_name in ("name", "picture", "description"):
             current_value = getattr(agent, field_name, None)
             if current_value is not None:
                 # Agent already has this field, don't overwrite
@@ -130,12 +126,6 @@ class AgentCreationFromTemplate(BaseModel):
     )
     description: str | None = PydanticField(
         default=None, description="Description of the agent"
-    )
-    readonly_wallet_address: str | None = PydanticField(
-        default=None, description="Read-only wallet address for the agent"
-    )
-    weekly_spending_limit: float | None = PydanticField(
-        default=None, description="Weekly spending limit for the agent"
     )
     extra_prompt: str | None = PydanticField(
         default=None,
@@ -180,8 +170,6 @@ async def create_agent_from_template(
             picture=data.picture,
             description=data.description,
             model=template_row.model,
-            readonly_wallet_address=data.readonly_wallet_address,
-            weekly_spending_limit=data.weekly_spending_limit,
             extra_prompt=data.extra_prompt,
             visibility=visibility,
         )
@@ -190,10 +178,5 @@ async def create_agent_from_template(
         await db.refresh(db_agent)
         agent = Agent.model_validate(db_agent)
         agent = await render_agent(agent)
-
-        # Process agent wallet
-        from intentkit.core.agent import process_agent_wallet
-
-        _ = await process_agent_wallet(agent)
 
         return agent

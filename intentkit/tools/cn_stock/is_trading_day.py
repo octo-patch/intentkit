@@ -20,6 +20,7 @@ class IsTradingDayInput(BaseModel):
 
 class IsTradingDay(CNStockBaseTool):
     name: str = "cn_stock_is_trading_day"
+    title: str = "Is Trading Day"
     description: str = (
         "Check whether a given date is an A-share trading day (excludes weekends and "
         "Chinese stock-market holidays). Always call this at the start of a scheduled "
@@ -47,7 +48,8 @@ class IsTradingDay(CNStockBaseTool):
         s = s.strip()
         for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y/%m/%d"):
             try:
-                return datetime.strptime(s, fmt).date()
+                # Date-only parse; a timezone would be meaningless here.
+                return datetime.strptime(s, fmt).date()  # noqa: DTZ007
             except ValueError:
                 continue
         raise ToolException(f"Cannot parse date: {s!r}")

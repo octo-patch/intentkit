@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from langchain_core.tools import BaseTool
 
+from intentkit.core.lead.constants import compose_system_prompt
 from intentkit.core.lead.tools.update_user_profile import (
     lead_update_user_profile_tool,
 )
@@ -23,9 +24,9 @@ def get_user_manager_tools() -> Sequence[BaseTool]:
 
 def build_user_manager(team_id: str) -> Agent:
     """Build an in-memory User Manager sub-agent."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
-    prompt = (
+    rules = (
         "### Workflow\n\n"
         "1. Confirm with the user which fields they want to change "
         "(name, timezone, language).\n"
@@ -45,36 +46,30 @@ def build_user_manager(team_id: str) -> Agent:
         "- Do not expose or modify any other user's profile.\n"
     )
 
+    system_prompt = compose_system_prompt(
+        purpose="Manage the current user's profile (name, timezone, language).",
+        principles=(
+            "1. Speak to users in their language.\n"
+            "2. Only operate on the current user — never on others.\n"
+            "3. Confirm what will be changed before updating."
+        ),
+        rules=rules,
+    )
+
     agent_data = {
         "id": f"team-{team_id}-user-manager",
         "owner": "system",
         "team_id": team_id,
         "name": "User Manager",
-        "purpose": "Manage the current user's profile (name, timezone, language).",
-        "principles": (
-            "1. Speak to users in their language.\n"
-            "2. Only operate on the current user — never on others.\n"
-            "3. Confirm what will be changed before updating."
-        ),
         "model": pick_default_model(),
-        "prompt": prompt,
-        "temperature": 0.2,
+        "system_prompt": system_prompt,
         "search_internet": False,
-        "super_mode": False,
-        "enable_todo": False,
         "enable_activity": False,
         "enable_post": False,
-        "enable_long_term_memory": False,
         "sub_agents": None,
-        "tools": {
-            "ui": {
-                "enabled": True,
-                "states": {
-                    "ui_show_card": "private",
-                    "ui_ask_user": "private",
-                },
-            },
-        },
+        # ui_show_card / ui_ask_user are interactive_only system tools now;
+        # ToolBindingMiddleware drops them per request for sub-agent runs
+        "tools": None,
         "created_at": now,
         "updated_at": now,
     }

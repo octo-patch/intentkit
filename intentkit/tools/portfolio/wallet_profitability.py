@@ -36,6 +36,7 @@ class WalletProfitability(PortfolioBaseTool):
     """
 
     name: str = "portfolio_wallet_profitability"
+    title: str = "Wallet Profitability Breakdown"
     description: str = "Get per-token profitability breakdown for a wallet."
     args_schema: ArgsSchema | None = WalletProfitabilityInput
 
@@ -84,7 +85,7 @@ class WalletProfitability(PortfolioBaseTool):
             )
         except ToolException:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
                 "wallet_profitability.py: Error fetching profitability breakdown",
                 exc_info=exc,

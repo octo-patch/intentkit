@@ -42,16 +42,20 @@ type ChatMessage struct {
 	CreatedAt   string              `json:"created_at,omitempty"`
 	ToolCalls   []ChatMessageTool   `json:"tool_calls,omitempty"`
 	Attachments []ChatMessageAttach `json:"attachments,omitempty"`
+	// Pending marks a transient stream frame: the tool calls are still
+	// executing and persisted result messages will follow.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // ChatMessageTool mirrors intentkit.models.chat.ChatMessageToolCall.
 type ChatMessageTool struct {
-	ID           string                 `json:"id,omitempty"`
-	Name         string                 `json:"name"`
-	Parameters   map[string]interface{} `json:"parameters"`
-	Success      bool                   `json:"success"`
-	Response     string                 `json:"response,omitempty"`
-	ErrorMessage string                 `json:"error_message,omitempty"`
+	ID             string                 `json:"id,omitempty"`
+	Name           string                 `json:"name"`
+	Parameters     map[string]interface{} `json:"parameters"`
+	Success        bool                   `json:"success"`
+	DisplayMessage string                 `json:"display_message,omitempty"`
+	Response       string                 `json:"response,omitempty"`
+	ErrorMessage   string                 `json:"error_message,omitempty"`
 }
 
 // ChatMessageAttach mirrors intentkit.models.chat.ChatMessageAttachment.

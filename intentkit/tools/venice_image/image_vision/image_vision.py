@@ -23,6 +23,7 @@ class ImageVision(VeniceImageVisionBaseTool):
     """
 
     name: str = "venice_image_vision"
+    title: str = "Image Vision"
     description: str = (
         "Describes an image from a URL using Venice AI.\n"
         "Provide the public URL of the image to describe.\n"
@@ -38,8 +39,6 @@ class ImageVision(VeniceImageVisionBaseTool):
     ) -> dict[str, Any]:
         try:
             context = self.get_context()
-
-            await self.apply_venice_rate_limit(context)
 
             image_base64 = await fetch_image_as_base64(image_url)
             if not image_base64:
@@ -89,11 +88,11 @@ class ImageVision(VeniceImageVisionBaseTool):
         except ToolException as e:
             return {
                 "success": False,
-                "error": f"An unexpected error occurred: {str(e)}",
+                "error": f"An unexpected error occurred: {e!s}",
             }
         except Exception as e:
             logger.error("Error in %s: %s", self.name, e)
             return {
                 "success": False,
-                "error": f"An unexpected error occurred: {str(e)}",
+                "error": f"An unexpected error occurred: {e!s}",
             }

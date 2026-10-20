@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
 from typing import Annotated, Any, ClassVar, Literal, override
 
 from pydantic import ConfigDict
@@ -28,12 +27,7 @@ class AgentResponse(Agent):
     )
 
     # Override privacy fields to exclude them from JSON schema
-    personality: SkipJsonSchema[str | None] = None
-    principles: SkipJsonSchema[str | None] = None
-    prompt: SkipJsonSchema[str | None] = None
-    prompt_append: SkipJsonSchema[str | None] = None
-    temperature: SkipJsonSchema[float | None] = None
-    frequency_penalty: SkipJsonSchema[float | None] = None
+    system_prompt: SkipJsonSchema[str | None] = None
     telegram_entrypoint_prompt: SkipJsonSchema[str | None] = None
     telegram_config: SkipJsonSchema[dict[str, Any] | None] = None
     discord_config: SkipJsonSchema[dict[str, Any] | None] = None
@@ -41,55 +35,6 @@ class AgentResponse(Agent):
     wechat_entrypoint_prompt: SkipJsonSchema[str | None] = None
 
     # Additional fields specific to AgentResponse
-    cdp_wallet_address: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="CDP wallet address of the agent",
-        ),
-    ]
-    evm_wallet_address: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="EVM wallet address of the agent",
-        ),
-    ]
-    solana_wallet_address: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="Solana wallet address of the agent",
-        ),
-    ]
-    has_twitter_linked: Annotated[
-        bool,
-        PydanticField(
-            default=False,
-            description="Whether the agent has Twitter linked",
-        ),
-    ]
-    linked_twitter_username: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="Linked Twitter username",
-        ),
-    ]
-    linked_twitter_name: Annotated[
-        str | None,
-        PydanticField(
-            default=None,
-            description="Linked Twitter display name",
-        ),
-    ]
-    has_twitter_self_key: Annotated[
-        bool,
-        PydanticField(
-            default=False,
-            description="Whether the agent has Twitter self key",
-        ),
-    ]
     has_telegram_self_key: Annotated[
         bool,
         PydanticField(
@@ -118,13 +63,6 @@ class AgentResponse(Agent):
             description="Whether the agent accepts image input",
         ),
     ]
-    accept_image_input_private: Annotated[
-        bool,
-        PydanticField(
-            default=False,
-            description="Whether the agent accepts image input in private mode",
-        ),
-    ]
 
     def etag(self) -> str:
         """Generate an ETag for this agent response.
@@ -144,7 +82,7 @@ class AgentResponse(Agent):
     @classmethod
     async def from_agent(
         cls, agent: Agent, agent_data: AgentData | None = None
-    ) -> "AgentResponse":
+    ) -> AgentResponse:
         """Create an AgentResponse from an Agent instance.
 
         Args:
@@ -154,30 +92,6 @@ class AgentResponse(Agent):
         Returns:
             AgentResponse: Response model with additional processed data
         """
-        # Process CDP wallet address
-        cdp_wallet_address = agent_data.evm_wallet_address if agent_data else None
-        evm_wallet_address = agent_data.evm_wallet_address if agent_data else None
-        solana_wallet_address = agent_data.solana_wallet_address if agent_data else None
-
-        # Process Twitter linked status
-        has_twitter_linked = False
-        linked_twitter_username = None
-        linked_twitter_name = None
-        if agent_data and agent_data.twitter_access_token:
-            linked_twitter_username = agent_data.twitter_username
-            linked_twitter_name = agent_data.twitter_name
-            if agent_data.twitter_access_token_expires_at:
-                has_twitter_linked = (
-                    agent_data.twitter_access_token_expires_at > datetime.now(UTC)
-                )
-            else:
-                has_twitter_linked = True
-
-        # Process Twitter self-key status
-        has_twitter_self_key = bool(
-            agent_data and agent_data.twitter_self_key_refreshed_at
-        )
-
         # Process Telegram self-key status
         linked_telegram_username = None
         linked_telegram_name = None
@@ -185,31 +99,21 @@ class AgentResponse(Agent):
         has_telegram_self_key = bool(
             telegram_config and "token" in telegram_config and telegram_config["token"]
         )
-        if telegram_config and "token" in telegram_config:
-            if agent_data:
-                linked_telegram_username = agent_data.telegram_username
-                linked_telegram_name = agent_data.telegram_name
+        if telegram_config and "token" in telegram_config and agent_data:
+            linked_telegram_username = agent_data.telegram_username
+            linked_telegram_name = agent_data.telegram_name
 
         accept_image_input = await agent.is_model_support_image()
-        accept_image_input_private = accept_image_input
 
         # Create AgentResponse instance directly from agent with additional fields
         return cls(
             # Copy all fields from agent
             **agent.model_dump(),
             # Add computed fields
-            cdp_wallet_address=cdp_wallet_address,
-            evm_wallet_address=evm_wallet_address,
-            solana_wallet_address=solana_wallet_address,
-            has_twitter_linked=has_twitter_linked,
-            linked_twitter_username=linked_twitter_username,
-            linked_twitter_name=linked_twitter_name,
-            has_twitter_self_key=has_twitter_self_key,
             has_telegram_self_key=has_telegram_self_key,
             linked_telegram_username=linked_telegram_username,
             linked_telegram_name=linked_telegram_name,
             accept_image_input=accept_image_input,
-            accept_image_input_private=accept_image_input_private,
         )
 
     @override
@@ -250,12 +154,7 @@ class AgentResponse(Agent):
 
         # Remove privacy fields that might still be present
         privacy_fields = {
-            "personality",
-            "principles",
-            "prompt",
-            "prompt_append",
-            "temperature",
-            "frequency_penalty",
+            "system_prompt",
             "telegram_entrypoint_prompt",
             "telegram_config",
             "discord_config",
@@ -266,7 +165,7 @@ class AgentResponse(Agent):
             data.pop(field, None)
 
         # Convert examples to AgentExample instances if they're dictionaries
-        if "examples" in data and data["examples"]:
+        if data.get("examples"):
             converted_examples = []
             for example in data["examples"]:
                 if isinstance(example, dict):
@@ -278,32 +177,6 @@ class AgentResponse(Agent):
                         else example
                     )
             data["examples"] = converted_examples
-
-        # Filter tools to only include enabled ones with specific configurations
-        if "tools" in data and data["tools"]:
-            filtered_tools = {}
-            for tool_name, tool_config in data["tools"].items():
-                if isinstance(tool_config, dict) and tool_config.get("enabled") is True:
-                    # Filter out disabled states from the tool configuration
-                    original_states = tool_config.get("states", {})
-                    filtered_states = {
-                        state_name: state_value
-                        for state_name, state_value in original_states.items()
-                        if state_value != "disabled"
-                    }
-
-                    # Only include the tool if it has at least one non-disabled state
-                    if filtered_states:
-                        filtered_config = {
-                            "enabled": tool_config["enabled"],
-                            "states": filtered_states,
-                        }
-                        # Add other non-sensitive config fields if needed
-                        for key in ["public", "private"]:
-                            if key in tool_config:
-                                filtered_config[key] = tool_config[key]
-                        filtered_tools[tool_name] = filtered_config
-            data["tools"] = filtered_tools
 
         return data
 

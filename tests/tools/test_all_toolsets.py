@@ -1,58 +1,50 @@
-"""Smoke coverage across every toolset plugin (cheap net for the skill->tool rename).
+"""Smoke coverage across every toolset plugin (cheap net for wide refactors).
 
-Imports each toolset under intentkit/tools/ and asserts it still exposes the
-renamed `get_tools` entrypoint (was `get_skills`), plus that its schema.json
-parses. One parametrized test covers all ~52 plugins, including the many that
-have no dedicated test file.
+Imports each package under intentkit/tools/ and asserts the toolset contract:
+anything that resolves tools (``get_tools``) must declare its catalog metadata
+(a module-level ``toolset`` ToolsetMeta) and vice versa. One parametrized test
+covers all ~50 plugins, including the many that have no dedicated test file.
 """
 
 import importlib
-import json
-from pathlib import Path
+import pkgutil
 
 import pytest
 
-TOOLS_DIR = Path(__file__).resolve().parents[2] / "intentkit" / "tools"
+import intentkit.tools as tools_pkg
+from intentkit.tools.meta import ToolsetMeta
 
-# MCP-driven toolsets expose their tools dynamically (no module-level get_tools).
-NO_GET_TOOLS = {"mcp_coingecko"}
-
-
-def _toolset_names():
-    # Mirror the tool_registry contract: a toolset category is a directory
-    # with a schema.json (shared infra packages like tools/mcp don't count).
-    names = []
-    for p in sorted(TOOLS_DIR.iterdir()):
-        if p.is_dir() and (p / "schema.json").exists():
-            names.append(p.name)
-    return names
-
-
-TOOLSETS = _toolset_names()
+PACKAGES = sorted(m.name for m in pkgutil.iter_modules(tools_pkg.__path__) if m.ispkg)
 
 
 def test_toolsets_discovered():
     # Guard against an empty parametrization silently passing.
-    assert len(TOOLSETS) >= 40, f"only found {len(TOOLSETS)} toolsets"
+    count = 0
+    for name in PACKAGES:
+        mod = importlib.import_module(f"intentkit.tools.{name}")
+        if isinstance(getattr(mod, "toolset", None), ToolsetMeta):
+            count += 1
+    assert count >= 40, f"only found {count} toolsets"
 
 
-@pytest.mark.parametrize("name", TOOLSETS)
-def test_toolset_imports_and_exposes_get_tools(name):
+@pytest.mark.parametrize("name", PACKAGES)
+def test_toolset_contract(name):
     mod = importlib.import_module(f"intentkit.tools.{name}")
-    if name in NO_GET_TOOLS:
+    meta = getattr(mod, "toolset", None)
+    has_get_tools = callable(getattr(mod, "get_tools", None))
+
+    if meta is None and not has_get_tools:
+        # Shared infra package (e.g. tools/mcp), not a toolset category.
         return
-    assert hasattr(mod, "get_tools"), (
-        f"intentkit.tools.{name} is missing get_tools "
-        f"(the get_skills->get_tools rename must reach every plugin)"
-    )
-    assert callable(mod.get_tools)
 
-
-@pytest.mark.parametrize("name", TOOLSETS)
-def test_toolset_schema_parses(name):
-    schema = TOOLS_DIR / name / "schema.json"
-    data = json.loads(schema.read_text())
-    props = data.get("properties", {})
-    assert "states" in props or "enabled" in props, (
-        f"{name}/schema.json missing the states/enabled config sub-shape"
+    assert isinstance(meta, ToolsetMeta), (
+        f"intentkit.tools.{name} resolves tools but declares no `toolset` "
+        f"ToolsetMeta — it would be invisible to the catalog"
     )
+    assert has_get_tools, (
+        f"intentkit.tools.{name} declares a toolset meta but is missing the "
+        f"get_tools entrypoint (every toolset must resolve tool names)"
+    )
+    assert meta.title, f"{name}: toolset title must not be empty"
+    assert meta.description, f"{name}: toolset description must not be empty"
+    assert isinstance(meta.tags, list)

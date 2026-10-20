@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 
 from intentkit.core.lead.constants import LEAD_DEFAULT_NAME, LEAD_DEFAULT_PERSONALITY
 from intentkit.core.lead.tools.base import LeadTool
-from intentkit.models.agent_data import AgentData
+from intentkit.core.memory import load_memory_block
+from intentkit.models.memory import MemoryScope
 from intentkit.models.team import Team
 from intentkit.tools.base import NoArgsSchema
 
@@ -22,7 +23,9 @@ class GetSelfInfoOutput(BaseModel):
     name: str = Field(description="Current lead agent name")
     avatar: str | None = Field(description="Current lead agent avatar URL")
     personality: str | None = Field(description="Current lead agent personality")
-    memory: str | None = Field(description="Current lead agent long-term memory")
+    memory: str | None = Field(
+        description="Current lead agent long-term memory, as the prompt renders it"
+    )
 
 
 class LeadGetSelfInfo(LeadTool):
@@ -42,10 +45,11 @@ class LeadGetSelfInfo(LeadTool):
             raise ToolException("No team_id in context")
         lead_agent_id = f"team-{team_id}"
 
-        # Parallelize independent DB lookups
-        raw_config, agent_data = await asyncio.gather(
+        # Parallelize independent DB lookups; the lead's own memory is its
+        # team-scope block.
+        raw_config, memory = await asyncio.gather(
             Team.get_lead_agent_config(team_id),
-            AgentData.get(lead_agent_id),
+            load_memory_block(lead_agent_id, MemoryScope.TEAM, team_id),
         )
         lead_config = raw_config or {}
 
@@ -53,7 +57,7 @@ class LeadGetSelfInfo(LeadTool):
             name=lead_config.get("name", LEAD_DEFAULT_NAME),
             avatar=lead_config.get("avatar"),
             personality=lead_config.get("personality", LEAD_DEFAULT_PERSONALITY),
-            memory=agent_data.long_term_memory,
+            memory=memory or None,
         )
 
 

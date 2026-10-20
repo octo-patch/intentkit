@@ -8,6 +8,7 @@ from langchain_core.tools.base import ToolException
 from pydantic import BaseModel, Field
 from web3 import Web3
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.weth.base import WethBaseTool
 from intentkit.tools.weth.constants import WETH_ABI, get_weth_address
 
@@ -15,6 +16,7 @@ from intentkit.tools.weth.constants import WETH_ABI, get_weth_address
 class WrapEthInput(BaseModel):
     """Input schema for wrap_eth."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     amount_to_wrap: str = Field(
         ...,
         description="Amount of ETH to wrap (e.g. '0.1')",
@@ -29,17 +31,21 @@ class WETHWrapEth(WethBaseTool):
     """
 
     name: str = "weth_wrap_eth"
+    title: str = "Wrap ETH"
+    team_only: bool = True
     description: str = "Wrap ETH to WETH (1:1 conversion). Ensure sufficient ETH for the amount plus gas fees."
     args_schema: ArgsSchema | None = WrapEthInput
 
     @override
     async def _arun(
         self,
+        wallet_address: str,
         amount_to_wrap: str,
     ) -> str:
         """Wrap ETH to WETH.
 
         Args:
+            wallet_address: Address of the team wallet to use.
             amount_to_wrap: Amount of ETH to wrap in human-readable format.
 
         Returns:
@@ -47,7 +53,7 @@ class WETHWrapEth(WethBaseTool):
         """
         try:
             # Get the unified wallet
-            wallet = await self.get_unified_wallet()
+            wallet = await self.get_unified_wallet(wallet_address)
             network_id = wallet.network_id
 
             # Get WETH address for this network

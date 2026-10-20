@@ -8,7 +8,6 @@ from fastapi import APIRouter, BackgroundTasks, Body, Depends, Path, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from intentkit.clients.twitter import unlink_twitter
 from intentkit.config.db import get_db, get_session
 from intentkit.core.agent import (
     backfill_agent_avatar,
@@ -17,6 +16,11 @@ from intentkit.core.agent import (
     patch_agent,
     publish_agent,
     unpublish_agent,
+)
+from intentkit.core.agent.publish import (
+    ensure_not_referenced_by_public_agent,
+    ensure_sub_agents_public,
+    is_public_visibility,
 )
 from intentkit.core.lead import invalidate_lead_cache
 from intentkit.core.team.membership import check_permission
@@ -264,14 +268,12 @@ async def patch_agent_endpoint(
     picture_explicitly_set = "picture" in update_fields
     should_backfill_avatar = not picture_explicitly_set and not existing_agent.picture
 
-    latest_agent, agent_data = await patch_agent(agent_id, agent)
-
-    # Invalidate lead cache when purpose changes, so lead agent rebuilds sub-agents list
-    if "purpose" in update_fields:
-        invalidate_lead_cache(team_id)
+    # get_team_agent accepts a slug; patch_agent and backfill_agent_avatar are
+    # id-only, so hand them the resolved id rather than the path parameter.
+    latest_agent, agent_data = await patch_agent(existing_agent.id, agent)
 
     if should_backfill_avatar:
-        background_tasks.add_task(backfill_agent_avatar, agent_id)
+        background_tasks.add_task(backfill_agent_avatar, existing_agent.id)
 
     agent_response = await AgentResponse.from_agent(latest_agent, agent_data)
     return Response(
@@ -295,6 +297,9 @@ async def archive_agent(
     """Archive an agent within the team."""
     _user_id, team_id = auth
     agent = await get_team_agent(agent_id, team_id)
+
+    # A sub-agent of a public agent cannot be archived while referenced.
+    await ensure_not_referenced_by_public_agent(agent.id, agent.slug)
 
     async with get_session() as db:
         result = await db.execute(select(AgentTable).where(AgentTable.id == agent.id))
@@ -322,6 +327,14 @@ async def reactivate_agent(
     _user_id, team_id = auth
     agent = await get_team_agent(agent_id, team_id)
 
+    # Un-archiving a public agent revives its guest-facing call_agent
+    # surface: its sub-agents must all (still) be public.
+    if is_public_visibility(agent.visibility):
+        await ensure_sub_agents_public(
+            agent.sub_agents,
+            exclude={ref for ref in (agent.id, agent.slug) if ref},
+        )
+
     async with get_session() as db:
         result = await db.execute(select(AgentTable).where(AgentTable.id == agent.id))
         agent_row = result.scalar_one_or_none()
@@ -348,19 +361,20 @@ async def publish_agent_endpoint(
 ) -> Response:
     """Publish a team agent.
 
-    The team UI only collects four public-info fields (description,
-    example_intro, examples, tags); ``fee_percentage`` is fixed at ``1`` for
-    every team publish and other public-info fields are not touched here.
+    The team UI only collects four fields (description, example_intro,
+    examples, tags); ``fee_percentage`` is fixed at ``1`` for every team
+    publish and other public-info fields are not touched here.
 
-    Sets visibility to PUBLIC and updates the listed public-info fields using
-    update semantics. The owning team's ``public_agent_limit`` is enforced
-    for newly published agents; re-publishing an already public agent always
-    succeeds.
+    Sets visibility to PUBLIC and updates the listed fields using update
+    semantics. The owning team's ``public_agent_limit`` is enforced for newly
+    published agents; re-publishing an already public agent always succeeds.
     """
     _user_id, team_id = auth
     agent = await get_team_agent(agent_id, team_id)
     latest_agent = await publish_agent(
-        agent_id=agent.id, public_info=body.to_public_info()
+        agent_id=agent.id,
+        public_info=body.to_public_info(),
+        description=body.description,
     )
     agent_data = await AgentData.get(latest_agent.id)
     agent_response = await AgentResponse.from_agent(latest_agent, agent_data)
@@ -392,28 +406,6 @@ async def unpublish_agent_endpoint(
     latest_agent = await unpublish_agent(agent_id=agent.id)
     agent_data = await AgentData.get(latest_agent.id)
     agent_response = await AgentResponse.from_agent(latest_agent, agent_data)
-    return Response(
-        content=agent_response.model_dump_json(),
-        media_type="application/json",
-        headers={"ETag": agent_response.etag()},
-    )
-
-
-@team_agent_router.put(
-    "/teams/{team_id}/agents/{agent_id}/twitter/unlink",
-    tags=["OAuth"],
-    operation_id="team_unlink_twitter",
-    summary="Unlink Twitter (Team)",
-)
-async def unlink_twitter_endpoint(
-    agent_id: str = Path(..., description="Agent ID"),
-    auth: tuple[str, str] = Depends(verify_team_member),
-) -> Response:
-    """Unlink Twitter/X from an agent within the team."""
-    _user_id, team_id = auth
-    agent = await get_team_agent(agent_id, team_id)
-    agent_data = await unlink_twitter(agent.id)
-    agent_response = await AgentResponse.from_agent(agent, agent_data)
     return Response(
         content=agent_response.model_dump_json(),
         media_type="application/json",

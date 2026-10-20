@@ -107,7 +107,7 @@ class LeadCallAgent(LeadTool):
         except ToolException:
             raise
         except Exception as e:
-            self.logger.error("lead_call_agent failed: %s", e, exc_info=True)
+            self.logger.exception("lead_call_agent failed")
             raise ToolException(f"Call agent failed with error: {e}") from e
 
     async def _call_sub_agent(
@@ -137,6 +137,8 @@ class LeadCallAgent(LeadTool):
 
         async with asyncio.timeout(CALL_AGENT_TIMEOUT):
             async for chat_msg in stream_agent_raw(chat_message, sub_agent, executor):
+                if chat_msg.pending:
+                    continue
                 if chat_msg.attachments:
                     all_attachments.extend(chat_msg.attachments)
                 last_message = chat_msg

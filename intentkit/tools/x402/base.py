@@ -18,10 +18,12 @@ from web3.exceptions import TimeExhausted, Web3RPCError
 from x402.schemas import PaymentRequired, PaymentRequiredV1
 
 from intentkit.config.config import config
-from intentkit.models.agent_data import AgentData
+from intentkit.models.chat import AUTONOMOUS_CHAT_PREFIX
 from intentkit.models.x402_order import X402Order, X402OrderCreate
 from intentkit.tools.onchain import IntentKitOnChainTool
 from intentkit.utils.alert import send_alert
+from intentkit.utils.ssrf import httpx_request_guard
+from intentkit.wallets import resolve_team_wallet
 from intentkit.wallets.privy import CHAIN_CONFIGS, PrivyClient, transfer_erc20_gasless
 
 logger = logging.getLogger(__name__)
@@ -51,8 +53,6 @@ HTTP_STATUS_PHRASES: dict[int, str] = {
 
 # Maximum content length to return (in bytes)
 MAX_CONTENT_LENGTH = 1000
-DEFAULT_NETWORK_ID = "base-mainnet"
-SUPPORTED_WALLET_PROVIDERS = {"cdp", "native", "safe", "privy"}
 
 PAYMENT_RESPONSE_HEADERS = ("payment-response", "x-payment-response")
 PAYMENT_REQUIRED_HEADERS = ("payment-required",)
@@ -163,7 +163,7 @@ def normalize_payment_required_payload(
 
 
 def normalize_network_id(network: str | None) -> str | None:
-    """Normalize CAIP-2 network identifiers to agent network IDs."""
+    """Normalize CAIP-2 network identifiers to platform network IDs."""
     if not network:
         return None
     key = str(network).strip().lower()
@@ -220,8 +220,8 @@ class X402BaseTool(IntentKitOnChainTool):
     Base class for x402 tools.
 
     This class provides unified wallet signer support for x402 operations,
-    automatically selecting the appropriate signer based on the agent's
-    wallet_provider configuration (CDP, Native, Privy, or Safe).
+    automatically selecting the appropriate signer based on the requested
+    team wallet's provider (CDP, Native, Privy, or Safe).
 
     Safe wallet mode is supported by prefunding the Privy EOA signer
     before initiating an x402 payment.
@@ -230,21 +230,9 @@ class X402BaseTool(IntentKitOnChainTool):
     category: str = "x402"
     description: str = ""
 
-    def _validate_wallet_provider(self) -> None:
-        """Validate that the wallet provider supports x402 operations.
-
-        Raises:
-            ValueError: If wallet provider is not supported for x402.
+    async def get_signer(self, wallet_address: str) -> Any:
         """
-        agent = self.get_context().agent
-        if agent and agent.wallet_provider not in SUPPORTED_WALLET_PROVIDERS:
-            raise ValueError(
-                "x402 operations require wallet_provider to be 'cdp', 'native', 'safe', or 'privy'."
-            )
-
-    async def get_signer(self) -> Any:
-        """
-        Get the wallet signer for x402 operations.
+        Get the wallet signer for x402 operations (guarded).
 
         This method uses the unified wallet signer interface from
         IntentKitOnChainTool, which automatically selects:
@@ -258,15 +246,13 @@ class X402BaseTool(IntentKitOnChainTool):
         - sign_typed_data()
         - unsafe_sign_hash()
 
+        Args:
+            wallet_address: Address of the team wallet to use.
+
         Returns:
             A wallet signer compatible with x402 requirements.
-
-        Raises:
-            ValueError: If wallet provider is unsupported.
         """
-        # Validate wallet provider before getting signer
-        self._validate_wallet_provider()
-        return await self.get_wallet_signer()
+        return await self.get_wallet_signer(wallet_address)
 
     def alert_prefund_paymaster_gas_shortage(
         self,
@@ -283,13 +269,10 @@ class X402BaseTool(IntentKitOnChainTool):
 
         try:
             context = self.get_context()
-            agent = context.agent
             agent_id = context.agent_id
-            network_id = agent.network_id if agent else None
-            wallet_provider = agent.wallet_provider if agent else None
+            wallet_provider = "safe"
         except (AttributeError, ValueError):
             agent_id = "unknown"
-            network_id = None
             wallet_provider = None
 
         try:
@@ -307,11 +290,6 @@ class X402BaseTool(IntentKitOnChainTool):
                                 "title": "Wallet Provider",
                                 "short": True,
                                 "value": wallet_provider or "unknown",
-                            },
-                            {
-                                "title": "Network",
-                                "short": True,
-                                "value": network_id or "unknown",
                             },
                             {"title": "URL", "value": url},
                             {"title": "Error", "value": error_message},
@@ -331,7 +309,9 @@ class X402BaseTool(IntentKitOnChainTool):
         request_kwargs: dict[str, Any],
         timeout: float,
     ) -> PaymentRequired | PaymentRequiredV1 | None:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout, event_hooks={"request": [httpx_request_guard]}
+        ) as client:
             response = await client.request(method, **request_kwargs)
             if response.status_code != 402:
                 return None
@@ -440,7 +420,8 @@ class X402BaseTool(IntentKitOnChainTool):
             raise ValueError("Failed to decode token balance response.") from exc
         result = payload.get("result")
         if not isinstance(result, str):
-            raise ValueError("Token balance response missing result.")
+            # Malformed RPC response data, not a wrong argument type.
+            raise ValueError("Token balance response missing result.")  # noqa: TRY004
         try:
             return int(result, 16)
         except ValueError as exc:
@@ -449,26 +430,26 @@ class X402BaseTool(IntentKitOnChainTool):
     async def ensure_safe_funding(
         self,
         *,
+        wallet_address: str,
         amount: int,
         token_address: str,
         max_value: int | None = None,
         network: str | None = None,
     ) -> None:
         agent = self.get_context().agent
-        if not agent or agent.wallet_provider != "safe":
+        wallet = await resolve_team_wallet(agent, wallet_address)
+        if wallet.wallet_provider != "safe":
             return
         if amount <= 0:
             return
         if max_value is not None and amount > max_value:
             raise ValueError(f"Payment amount {amount} exceeds max_value {max_value}.")
+        # Prefunding moves funds out of the Safe, so it is a signing path.
+        self.ensure_signing_allowed()
 
-        agent_data = await AgentData.get(agent.id)
-        if not agent_data.privy_wallet_data:
+        privy_wallet_data = wallet.wallet_data_json()
+        if not privy_wallet_data:
             raise ValueError("Privy wallet data missing for Safe wallet funding.")
-        try:
-            privy_wallet_data = json.loads(agent_data.privy_wallet_data)
-        except json.JSONDecodeError as exc:
-            raise ValueError("Privy wallet data is corrupted.") from exc
 
         try:
             privy_wallet_id = privy_wallet_data["privy_wallet_id"]
@@ -476,12 +457,7 @@ class X402BaseTool(IntentKitOnChainTool):
             safe_address = privy_wallet_data["smart_wallet_address"]
         except KeyError as exc:
             raise ValueError("Privy wallet data missing required fields.") from exc
-        network_id = (
-            privy_wallet_data.get("network_id")
-            or agent.network_id
-            or network
-            or DEFAULT_NETWORK_ID
-        )
+        network_id = privy_wallet_data.get("network_id") or network or wallet.network
         normalized_network_id = normalize_network_id(network_id) or network_id
         rpc_url = self._resolve_rpc_url(normalized_network_id, privy_wallet_data)
         balance = await self._get_erc20_balance(
@@ -515,13 +491,15 @@ class X402BaseTool(IntentKitOnChainTool):
     async def _prefund_safe_wallet(
         self,
         *,
+        wallet_address: str,
         method: str,
         request_kwargs: dict[str, Any],
         timeout: float,
         max_value: int | None = None,
     ) -> None:
         agent = self.get_context().agent
-        if not agent or agent.wallet_provider != "safe":
+        wallet = await resolve_team_wallet(agent, wallet_address)
+        if wallet.wallet_provider != "safe":
             return
         payment_response = await self._get_payment_requirement(
             method=method,
@@ -545,6 +523,7 @@ class X402BaseTool(IntentKitOnChainTool):
             amount,
         )
         await self.ensure_safe_funding(
+            wallet_address=wallet_address,
             amount=amount,
             token_address=requirement.asset,
             max_value=max_value,
@@ -592,6 +571,7 @@ class X402BaseTool(IntentKitOnChainTool):
         tool_name: str,
         method: str,
         url: str,
+        wallet_address: str,
         max_value: int | None = None,
         pay_to_fallback: str | None = None,
     ) -> None:
@@ -606,6 +586,7 @@ class X402BaseTool(IntentKitOnChainTool):
             tool_name: Name of the tool that made the request
             method: HTTP method used
             url: Target URL
+            wallet_address: Address of the team wallet that paid
             max_value: Maximum payment value (for x402_pay only)
             pay_to_fallback: Fallback address if pay_to is missing in headers
         """
@@ -617,13 +598,13 @@ class X402BaseTool(IntentKitOnChainTool):
             user_id = context.user_id
 
             # Get payer address from signer
-            signer = await self.get_signer()
+            signer = await self.get_signer(wallet_address)
             payer = signer.address
 
             # Derive task_id from chat_id for autonomous tasks
             task_id = None
-            if chat_id.startswith("autonomous-"):
-                task_id = chat_id.removeprefix("autonomous-")
+            if chat_id.startswith(AUTONOMOUS_CHAT_PREFIX):
+                task_id = chat_id.removeprefix(AUTONOMOUS_CHAT_PREFIX)
 
             # Parse payment response header (v1/v2, base64-encoded JSON)
             payment_response_header = get_payment_response_header(response)
@@ -697,7 +678,6 @@ class X402BaseTool(IntentKitOnChainTool):
 
             tx_hash = payment_data.get("transaction", payment_data.get("txHash"))
             success = payment_data.get("success", True)
-            description = description
 
             # Create order record
             order = X402OrderCreate(
@@ -725,6 +705,6 @@ class X402BaseTool(IntentKitOnChainTool):
                 f"Recorded x402 order for agent {agent_id}: {tx_hash or 'no tx'}"
             )
 
-        except Exception as e:
+        except Exception:
             # Don't fail the tool execution if order recording fails
-            logger.error("Failed to record x402 order: %s", e, exc_info=True)
+            logger.exception("Failed to record x402 order")

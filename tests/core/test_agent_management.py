@@ -3,10 +3,22 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
+from intentkit.config.base import Base
+from intentkit.models.agent_data import AgentDataTable
 from intentkit.utils.error import IntentKitAPIError
 
 MODULE = "intentkit.core.agent.management"
+
+
+@pytest_asyncio.fixture()
+async def agent_data_table(db_engine):
+    """Create the agent data table: create/patch/override resolve AgentData
+    from the real test DB after persisting."""
+    async with db_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all, tables=[AgentDataTable.__table__])
+    yield
 
 
 # ---------------------------------------------------------------------------
@@ -26,15 +38,16 @@ def _make_session_mock():
 
 def _make_existing_agent(**overrides):
     """Return a MagicMock that looks like an Agent returned by get_agent."""
-    defaults = dict(
-        id="agent-1",
-        owner="owner-1",
-        slug="my-slug",
-        purpose="some purpose",
-        wallet_provider="privy",
-        weekly_spending_limit=100,
-        team_id=None,
-    )
+    defaults = {
+        "id": "agent-1",
+        "owner": "owner-1",
+        "slug": "my-slug",
+        "system_prompt": "## Purpose\n\nsome purpose",
+        "team_id": None,
+        "visibility": None,
+        "archived_at": None,
+        "sub_agents": None,
+    }
     defaults.update(overrides)
     agent = MagicMock()
     for k, v in defaults.items():
@@ -48,6 +61,7 @@ def _make_agent_update(**overrides):
     dump = {
         "slug": "my-slug",
         "sub_agents": None,
+        "tools": None,
     }
     dump.update(overrides)
     agent.model_dump = MagicMock(return_value=dict(dump))
@@ -60,6 +74,9 @@ def _make_agent_update(**overrides):
     agent.hash = MagicMock(return_value="abc123")
     agent.slug = dump.get("slug")
     agent.sub_agents = dump.get("sub_agents")
+    agent.tools = dump.get("tools")
+    agent.visibility = dump.get("visibility")
+    agent.archived_at = dump.get("archived_at")
     return agent
 
 
@@ -119,7 +136,7 @@ class TestValidateSubAgents:
     async def test_all_valid(self, mock_get):
         from intentkit.core.agent.management import _validate_sub_agents
 
-        mock_get.return_value = MagicMock(purpose="do stuff")
+        mock_get.return_value = MagicMock()
         await _validate_sub_agents(["sub-1", "sub-2"])
         assert mock_get.call_count == 2
 
@@ -134,18 +151,6 @@ class TestValidateSubAgents:
         assert exc_info.value.status_code == 400
         assert exc_info.value.key == "InvalidSubAgent"
         assert "not found" in exc_info.value.message
-
-    @pytest.mark.asyncio
-    @patch(f"{MODULE}.get_agent_by_id_or_slug", new_callable=AsyncMock)
-    async def test_sub_agent_no_purpose(self, mock_get):
-        from intentkit.core.agent.management import _validate_sub_agents
-
-        mock_get.return_value = MagicMock(purpose=None)
-        with pytest.raises(IntentKitAPIError) as exc_info:
-            await _validate_sub_agents(["no-purpose-agent"])
-        assert exc_info.value.status_code == 400
-        assert exc_info.value.key == "InvalidSubAgent"
-        assert "purpose" in exc_info.value.message
 
 
 # ===========================================================================
@@ -190,11 +195,16 @@ class TestOverrideAgent:
 
     @pytest.mark.asyncio
     @patch(f"{MODULE}.send_agent_notification")
-    @patch(f"{MODULE}.process_agent_wallet", new_callable=AsyncMock)
+    @patch(f"{MODULE}._validate_wallet_tools", new_callable=AsyncMock)
     @patch(f"{MODULE}.get_session")
     @patch(f"{MODULE}.get_agent", new_callable=AsyncMock)
     async def test_successful_override(
-        self, mock_get_agent, mock_get_session, mock_wallet, mock_notify
+        self,
+        mock_get_agent,
+        mock_get_session,
+        mock_validate_wallet,
+        mock_notify,
+        agent_data_table,
     ):
         from intentkit.core.agent.management import override_agent
 
@@ -208,19 +218,21 @@ class TestOverrideAgent:
         mock_session.get = AsyncMock(return_value=db_agent)
         mock_session.scalar = AsyncMock(return_value=None)  # slug unique check
 
-        agent_data = MagicMock()
-        mock_wallet.return_value = agent_data
+        mock_validate_wallet.return_value = None  # wallet gating no-op
 
         agent_update = _make_agent_update(slug="my-slug")
 
         with patch("intentkit.models.agent.Agent.model_validate") as mock_validate:
             mock_validate.return_value = _make_existing_agent()
-            result_agent, result_data = await override_agent(
+            _result_agent, _result_data = await override_agent(
                 "agent-1", agent_update, "owner-1"
             )
 
         mock_session.commit.assert_awaited_once()
-        mock_wallet.assert_awaited_once()
+        # Wallet binding is validated before persisting
+        mock_validate_wallet.assert_awaited_once_with(
+            agent_update.tools, existing.team_id
+        )
         mock_notify.assert_called_once()
 
 
@@ -254,11 +266,16 @@ class TestPatchAgent:
 
     @pytest.mark.asyncio
     @patch(f"{MODULE}.send_agent_notification")
-    @patch(f"{MODULE}.process_agent_wallet", new_callable=AsyncMock)
+    @patch(f"{MODULE}._validate_wallet_tools", new_callable=AsyncMock)
     @patch(f"{MODULE}.get_session")
     @patch(f"{MODULE}.get_agent", new_callable=AsyncMock)
     async def test_successful_patch(
-        self, mock_get_agent, mock_get_session, mock_wallet, mock_notify
+        self,
+        mock_get_agent,
+        mock_get_session,
+        mock_validate_wallet,
+        mock_notify,
+        agent_data_table,
     ):
         from intentkit.core.agent.management import patch_agent
 
@@ -272,20 +289,20 @@ class TestPatchAgent:
         mock_session.get = AsyncMock(return_value=db_agent)
         mock_session.scalar = AsyncMock(return_value=None)
 
-        agent_data = MagicMock()
-        mock_wallet.return_value = agent_data
+        mock_validate_wallet.return_value = None  # wallet gating no-op
 
-        # Only updating slug (same value) via exclude_unset
-        agent_update = _make_agent_update(slug="my-slug")
+        # Updating slug (same value) and tools via exclude_unset
+        agent_update = _make_agent_update(slug="my-slug", tools=["http_get"])
 
         with patch("intentkit.models.agent.Agent.model_validate") as mock_validate:
             mock_validate.return_value = _make_existing_agent()
-            result_agent, result_data = await patch_agent(
+            _result_agent, _result_data = await patch_agent(
                 "agent-1", agent_update, "owner-1"
             )
 
         mock_session.commit.assert_awaited_once()
-        mock_wallet.assert_awaited_once()
+        # Web3 gating runs when tools are part of the patch
+        mock_validate_wallet.assert_awaited_once_with(["http_get"], existing.team_id)
         mock_notify.assert_called_once()
 
 
@@ -327,6 +344,8 @@ class TestCreateAgent:
         agent_create.upstream_id = None
         agent_create.sub_agents = None
         agent_create.slug = None
+        # No tools set, so the real wallet gating is a no-op
+        agent_create.tools = None
 
         with patch(f"{MODULE}.AgentTable") as mock_table:
             mock_table.return_value = MagicMock()
@@ -337,10 +356,10 @@ class TestCreateAgent:
 
     @pytest.mark.asyncio
     @patch(f"{MODULE}.send_agent_notification")
-    @patch(f"{MODULE}.process_agent_wallet", new_callable=AsyncMock)
+    @patch(f"{MODULE}._validate_wallet_tools", new_callable=AsyncMock)
     @patch(f"{MODULE}.get_session")
     async def test_successful_creation(
-        self, mock_get_session, mock_wallet, mock_notify
+        self, mock_get_session, mock_validate_wallet, mock_notify, agent_data_table
     ):
         from intentkit.core.agent.management import create_agent
 
@@ -348,8 +367,7 @@ class TestCreateAgent:
         mock_get_session.return_value = session_ctx
         mock_session.scalar = AsyncMock(return_value=None)
 
-        agent_data = MagicMock()
-        mock_wallet.return_value = agent_data
+        mock_validate_wallet.return_value = None  # wallet gating no-op
 
         agent_create = _make_agent_create(owner="owner-1")
         agent_create.upstream_id = None
@@ -368,66 +386,15 @@ class TestCreateAgent:
                 "intentkit.core.team.subscription.auto_subscribe_team",
                 new_callable=AsyncMock,
             ) as mock_subscribe:
-                result_agent, result_data = await create_agent(agent_create)
+                _result_agent, _result_data = await create_agent(agent_create)
                 mock_subscribe.assert_awaited_once_with("team-1", validated_agent.id)
 
         mock_session.commit.assert_awaited_once()
-        mock_wallet.assert_awaited_once()
+        # Wallet binding is validated before persisting
+        mock_validate_wallet.assert_awaited_once_with(
+            agent_create.tools, agent_create.team_id
+        )
         mock_notify.assert_called_once()
-
-
-# ===========================================================================
-# deploy_agent
-# ===========================================================================
-
-
-class TestDeployAgent:
-    @pytest.mark.asyncio
-    @patch(f"{MODULE}.override_agent", new_callable=AsyncMock)
-    async def test_existing_agent_calls_override(self, mock_override):
-        from intentkit.core.agent.management import deploy_agent
-
-        expected = (MagicMock(), MagicMock())
-        mock_override.return_value = expected
-
-        agent_update = _make_agent_update()
-        result = await deploy_agent("agent-1", agent_update, "owner-1")
-
-        mock_override.assert_awaited_once_with("agent-1", agent_update, "owner-1")
-        assert result == expected
-
-    @pytest.mark.asyncio
-    @patch(f"{MODULE}.create_agent", new_callable=AsyncMock)
-    @patch(f"{MODULE}.override_agent", new_callable=AsyncMock)
-    async def test_not_found_falls_back_to_create(self, mock_override, mock_create):
-        from intentkit.core.agent.management import deploy_agent
-
-        mock_override.side_effect = IntentKitAPIError(404, "AgentNotFound", "not found")
-        expected = (MagicMock(), MagicMock())
-        mock_create.return_value = expected
-
-        agent_update = _make_agent_update()
-
-        with patch("intentkit.models.agent.AgentCreate.model_validate") as mock_v:
-            mock_new = MagicMock()
-            mock_v.return_value = mock_new
-            result = await deploy_agent("agent-1", agent_update, "owner-1")
-
-        mock_create.assert_awaited_once()
-        assert mock_new.id == "agent-1"
-        assert mock_new.owner == "owner-1"
-        assert result == expected
-
-    @pytest.mark.asyncio
-    @patch(f"{MODULE}.override_agent", new_callable=AsyncMock)
-    async def test_non_404_error_propagates(self, mock_override):
-        from intentkit.core.agent.management import deploy_agent
-
-        mock_override.side_effect = IntentKitAPIError(403, "Forbidden", "forbidden")
-        agent_update = _make_agent_update()
-        with pytest.raises(IntentKitAPIError) as exc_info:
-            await deploy_agent("agent-1", agent_update, "owner-1")
-        assert exc_info.value.status_code == 403
 
 
 # ===========================================================================
@@ -529,3 +496,129 @@ class TestBackfillAgentAvatar:
 
         # Must not raise (runs in BackgroundTasks, errors would surface to user).
         await backfill_agent_avatar("agent-1")
+
+
+# ===========================================================================
+# _invalidate_lead_for_team + patch/override wiring
+# ===========================================================================
+
+
+class TestLeadCacheInvalidation:
+    @pytest.fixture
+    def lead_cache_isolation(self):
+        """Snapshot and restore the process-global lead cache dicts so seeded
+        MagicMock entries never leak into other tests."""
+        from intentkit.core.lead import cache
+
+        names = ("lead_executors", "lead_agents", "lead_cached_at")
+        snapshot = {name: dict(getattr(cache, name)) for name in names}
+        yield cache
+        for name in names:
+            d = getattr(cache, name)
+            d.clear()
+            d.update(snapshot[name])
+
+    def test_invalidate_lead_for_team_drops_only_that_team(self, lead_cache_isolation):
+        from intentkit.core.agent.management import _invalidate_lead_for_team
+
+        cache = lead_cache_isolation
+        team_id = "team-invalidate-xyz"
+        key = cache.lead_cache_key(team_id, "user-1")
+        cache.lead_executors[key] = MagicMock()
+        cache.lead_agents[key] = MagicMock()
+        cache.lead_cached_at[key] = MagicMock()
+        # The user-agnostic display entry is keyed by the bare team id.
+        cache.lead_agents[team_id] = MagicMock()
+        cache.lead_cached_at[team_id] = MagicMock()
+        # An unrelated team must survive the targeted invalidation.
+        other_key = cache.lead_cache_key("other-team", "user-1")
+        cache.lead_agents[other_key] = MagicMock()
+
+        _invalidate_lead_for_team(team_id)
+
+        assert key not in cache.lead_executors
+        assert key not in cache.lead_agents
+        assert key not in cache.lead_cached_at
+        assert team_id not in cache.lead_agents
+        assert team_id not in cache.lead_cached_at
+        assert other_key in cache.lead_agents
+
+    def test_invalidate_lead_for_team_noop_without_team(self):
+        import intentkit.core.lead.cache as cache_mod
+        from intentkit.core.agent import management
+
+        # Spy on the cache function the helper imports lazily; the guard must
+        # short-circuit for a team-less agent and dispatch for a real team.
+        with patch.object(cache_mod, "invalidate_lead_cache") as spy:
+            management._invalidate_lead_for_team(None)
+            spy.assert_not_called()
+            management._invalidate_lead_for_team("team-abc")
+            spy.assert_called_once_with("team-abc")
+
+    @pytest.mark.asyncio
+    @patch(f"{MODULE}._invalidate_lead_for_team")
+    @patch(f"{MODULE}.AgentData.get", new_callable=AsyncMock)
+    @patch(f"{MODULE}.send_agent_notification")
+    @patch(f"{MODULE}.invalidate_agent_info", new_callable=AsyncMock)
+    @patch(f"{MODULE}._validate_wallet_tools", new_callable=AsyncMock)
+    @patch(f"{MODULE}.get_session")
+    @patch(f"{MODULE}.get_agent", new_callable=AsyncMock)
+    async def test_patch_invalidates_team_lead(
+        self,
+        mock_get_agent,
+        mock_get_session,
+        mock_validate_wallet,
+        mock_invalidate_info,
+        mock_notify,
+        mock_agent_data_get,
+        mock_invalidate_lead,
+    ):
+        from intentkit.core.agent.management import patch_agent
+
+        mock_get_agent.return_value = _make_existing_agent(team_id="team-xyz")
+        session_ctx, mock_session = _make_session_mock()
+        mock_get_session.return_value = session_ctx
+        mock_session.get = AsyncMock(return_value=MagicMock())
+        mock_session.scalar = AsyncMock(return_value=None)
+        mock_validate_wallet.return_value = None
+
+        agent_update = _make_agent_update(slug="my-slug")
+        with patch("intentkit.models.agent.Agent.model_validate") as mock_validate:
+            mock_validate.return_value = _make_existing_agent(team_id="team-xyz")
+            await patch_agent("agent-1", agent_update, "owner-1")
+
+        mock_invalidate_lead.assert_called_once_with("team-xyz")
+
+    @pytest.mark.asyncio
+    @patch(f"{MODULE}._invalidate_lead_for_team")
+    @patch(f"{MODULE}.AgentData.get", new_callable=AsyncMock)
+    @patch(f"{MODULE}.send_agent_notification")
+    @patch(f"{MODULE}.invalidate_agent_info", new_callable=AsyncMock)
+    @patch(f"{MODULE}._validate_wallet_tools", new_callable=AsyncMock)
+    @patch(f"{MODULE}.get_session")
+    @patch(f"{MODULE}.get_agent", new_callable=AsyncMock)
+    async def test_override_invalidates_team_lead(
+        self,
+        mock_get_agent,
+        mock_get_session,
+        mock_validate_wallet,
+        mock_invalidate_info,
+        mock_notify,
+        mock_agent_data_get,
+        mock_invalidate_lead,
+    ):
+        from intentkit.core.agent.management import override_agent
+
+        mock_get_agent.return_value = _make_existing_agent(team_id="team-xyz")
+        session_ctx, mock_session = _make_session_mock()
+        mock_get_session.return_value = session_ctx
+        mock_session.get = AsyncMock(return_value=MagicMock())
+        mock_session.scalar = AsyncMock(return_value=None)
+        mock_validate_wallet.return_value = None
+
+        agent_update = _make_agent_update(slug="my-slug")
+        with patch("intentkit.models.agent.Agent.model_validate") as mock_validate:
+            mock_validate.return_value = _make_existing_agent(team_id="team-xyz")
+            await override_agent("agent-1", agent_update, "owner-1")
+
+        mock_invalidate_lead.assert_called_once_with("team-xyz")

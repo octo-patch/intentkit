@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -22,6 +22,30 @@ interface TaskDialogProps {
   defaultTargetAgentId?: string;
 }
 
+function buildFormData(
+  task: AutonomousTask | null | undefined,
+  defaultTargetAgentId: string | undefined,
+): Partial<AutonomousTask> {
+  if (task) {
+    return {
+      name: task.name || "",
+      description: task.description || "",
+      cron: task.cron || "",
+      prompt: task.prompt || "",
+      enabled: task.enabled,
+      target_agent_id: task.target_agent_id || "",
+    };
+  }
+  return {
+    name: "",
+    description: "",
+    cron: "0 0 * * *",
+    prompt: "",
+    enabled: true,
+    target_agent_id: defaultTargetAgentId || "",
+  };
+}
+
 export function TaskDialog({
   open,
   onOpenChange,
@@ -30,39 +54,22 @@ export function TaskDialog({
   defaultTargetAgentId,
 }: TaskDialogProps) {
   const [loading, setLoading] = useState(false);
-  const [formData, setFormData] = useState<Partial<AutonomousTask>>({
-    name: "",
-    description: "",
-    cron: "0 0 * * *",
-    prompt: "",
-    enabled: true,
-    has_memory: false,
-    target_agent_id: "",
-  });
+  const [formData, setFormData] = useState<Partial<AutonomousTask>>(() =>
+    buildFormData(task, defaultTargetAgentId),
+  );
 
-  useEffect(() => {
-    if (task) {
-      setFormData({
-        name: task.name || "",
-        description: task.description || "",
-        cron: task.cron || "",
-        prompt: task.prompt || "",
-        enabled: task.enabled,
-        has_memory: task.has_memory,
-        target_agent_id: task.target_agent_id || "",
-      });
-    } else {
-      setFormData({
-        name: "",
-        description: "",
-        cron: "0 0 * * *",
-        prompt: "",
-        enabled: true,
-        has_memory: false,
-        target_agent_id: defaultTargetAgentId || "",
-      });
-    }
-  }, [task, open, defaultTargetAgentId]);
+  // Reset the form whenever the dialog (re)opens or its target task changes.
+  // Tracking the inputs and syncing during render (instead of in an effect)
+  // keeps the form in step without an extra commit + cascading render.
+  const [synced, setSynced] = useState({ task, open, defaultTargetAgentId });
+  if (
+    synced.task !== task ||
+    synced.open !== open ||
+    synced.defaultTargetAgentId !== defaultTargetAgentId
+  ) {
+    setSynced({ task, open, defaultTargetAgentId });
+    setFormData(buildFormData(task, defaultTargetAgentId));
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -184,42 +191,22 @@ export function TaskDialog({
               />
             </div>
 
-            <div className="flex items-center gap-4">
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="enabled"
-                  checked={formData.enabled}
-                  onChange={(e) =>
-                    setFormData({ ...formData, enabled: e.target.checked })
-                  }
-                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                />
-                <label
-                  htmlFor="enabled"
-                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                >
-                  Enabled
-                </label>
-              </div>
-
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="has_memory"
-                  checked={formData.has_memory}
-                  onChange={(e) =>
-                    setFormData({ ...formData, has_memory: e.target.checked })
-                  }
-                  className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
-                />
-                <label
-                  htmlFor="has_memory"
-                  className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
-                >
-                  Enable Memory
-                </label>
-              </div>
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="enabled"
+                checked={formData.enabled}
+                onChange={(e) =>
+                  setFormData({ ...formData, enabled: e.target.checked })
+                }
+                className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary"
+              />
+              <label
+                htmlFor="enabled"
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+              >
+                Enabled
+              </label>
             </div>
           </div>
 

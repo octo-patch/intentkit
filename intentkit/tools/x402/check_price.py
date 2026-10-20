@@ -20,6 +20,7 @@ from intentkit.tools.x402.base import (
     get_payment_required_header,
     normalize_payment_required_payload,
 )
+from intentkit.utils.ssrf import httpx_request_guard
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class X402CheckPrice(X402BaseTool):
     """Tool that checks the price of a 402-protected HTTP resource without making a payment."""
 
     name: str = "x402_check_price"
+    title: str = "Check Price"
     description: str = (
         "Check the price of a 402-protected resource without paying. "
         "Returns payment requirements (amount, asset, network)."
@@ -115,7 +117,9 @@ class X402CheckPrice(X402BaseTool):
 
         try:
             # Use regular httpx client without x402 signing to get the 402 response
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=timeout, event_hooks={"request": [httpx_request_guard]}
+            ) as client:
                 response = await client.request(method_upper, **request_kwargs)
 
                 if response.status_code == 402:
@@ -248,9 +252,9 @@ class X402CheckPrice(X402BaseTool):
                 f"Request to {url} timed out after {timeout} seconds"
             ) from exc
         except httpx.RequestError as exc:
-            raise ToolException(f"Failed to connect to {url} - {str(exc)}") from exc
+            raise ToolException(f"Failed to connect to {url} - {exc!s}") from exc
         except ToolException:
             raise
         except Exception as exc:
             logger.error("Unexpected error in x402_check_price", exc_info=exc)
-            raise ToolException(f"Unexpected error occurred - {str(exc)}") from exc
+            raise ToolException(f"Unexpected error occurred - {exc!s}") from exc

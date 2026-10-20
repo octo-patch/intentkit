@@ -9,13 +9,13 @@ from langchain_core.tools.base import ToolException
 from pydantic import BaseModel, Field
 from web3 import Web3
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.uniswap.base import UniswapBaseTool
 from intentkit.tools.uniswap.constants import (
     FACTORY_ABI,
     FACTORY_ADDRESSES,
     MAX_TICK,
     MIN_TICK,
-    NETWORK_TO_CHAIN_ID,
     POSITION_MANAGER_ABI,
     POSITION_MANAGER_ADDRESSES,
     TICK_SPACINGS,
@@ -35,6 +35,7 @@ NAME = "uniswap_add_liquidity"
 class UniswapAddLiquidityInput(BaseModel):
     """Input for Uniswap add liquidity."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_a: str = Field(
         description="First token address, or 'native' for native token"
     )
@@ -61,6 +62,8 @@ class UniswapAddLiquidity(UniswapBaseTool):
     """Add liquidity to a Uniswap V3 pool."""
 
     name: str = NAME
+    title: str = "Add Liquidity"
+    team_only: bool = True
     description: str = (
         "Add liquidity to a Uniswap V3 pool. Creates a full-range position. "
         "Provide token addresses and amounts in human-readable format."
@@ -70,6 +73,7 @@ class UniswapAddLiquidity(UniswapBaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_a: str,
         token_b: str,
         amount_a: str,
@@ -79,16 +83,8 @@ class UniswapAddLiquidity(UniswapBaseTool):
         **kwargs: Any,
     ) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
-
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"Uniswap not supported on {network_id}. "
-                    f"Supported: {', '.join(NETWORK_TO_CHAIN_ID.keys())}"
-                )
+            wallet = await self.get_unified_wallet(wallet_address)
+            chain_id = self._resolve_chain_id(wallet.network_id)
 
             tick_spacing = TICK_SPACINGS.get(fee_tier)
             if not tick_spacing:
@@ -100,8 +96,7 @@ class UniswapAddLiquidity(UniswapBaseTool):
             if not pm_address or not factory_address:
                 raise ToolException(f"No Uniswap contracts for chain {chain_id}")
 
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
+            w3 = wallet.w3
 
             # Resolve tokens (V3 uses wrapped tokens)
             is_native_a = token_a.lower() == "native"
@@ -186,7 +181,7 @@ class UniswapAddLiquidity(UniswapBaseTool):
 
             # Build mint calldata
             pm = w3.eth.contract(address=checksum_pm, abi=POSITION_MANAGER_ABI)
-            wallet_address = Web3.to_checksum_address(wallet.address)
+            recipient = Web3.to_checksum_address(wallet.address)
             deadline = int(time.time()) + 600  # 10 minutes
 
             mint_data = pm.encode_abi(
@@ -202,7 +197,7 @@ class UniswapAddLiquidity(UniswapBaseTool):
                         amount1,
                         amount0_min,
                         amount1_min,
-                        wallet_address,
+                        recipient,
                         deadline,
                     )
                 ],

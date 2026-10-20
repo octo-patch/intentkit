@@ -17,13 +17,11 @@ def mock_agent():
         name="Test Agent",
         description="A test agent",
         model="gpt-4o",
-        deployed_at=datetime.now(),
         updated_at=datetime.now(),
         created_at=datetime.now(),
         owner="user_1",
-        tools={},
-        prompt="You are a helper.",
-        temperature=0.7,
+        tools=None,
+        system_prompt="You are a helper.",
         visibility=AgentVisibility.PRIVATE,
         public_info_updated_at=datetime.now(),
     )
@@ -83,6 +81,7 @@ async def test_recursion_error_handling(mock_agent):
         mock_saved_msg.user_id = "user_1"
         mock_saved_msg.message = "Hello"
         mock_saved_msg.author_type = AuthorType.WEB
+        mock_saved_msg.thread_entrypoint = AuthorType.WEB
         mock_saved_msg.attachments = []
         mock_saved_msg.app_id = None
         mock_save.return_value = mock_saved_msg

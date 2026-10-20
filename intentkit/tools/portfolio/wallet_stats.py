@@ -28,6 +28,7 @@ class WalletStats(PortfolioBaseTool):
     """
 
     name: str = "portfolio_wallet_stats"
+    title: str = "Wallet Stats"
     description: str = "Get wallet stats (NFT count, collections, transactions)."
     args_schema: ArgsSchema | None = WalletStatsInput
 
@@ -66,10 +67,8 @@ class WalletStats(PortfolioBaseTool):
             return await self._make_request(
                 method="GET", endpoint=endpoint, api_key=api_key, params=params
             )
-        except Exception as e:
-            logger.error(
-                f"wallet_stats.py: Error fetching wallet stats: {e}", exc_info=True
-            )
+        except Exception:
+            logger.exception("wallet_stats.py: Error fetching wallet stats")
             return {
                 "error": "An error occurred while fetching wallet stats. Please try again later."
             }

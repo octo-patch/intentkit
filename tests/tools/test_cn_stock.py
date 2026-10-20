@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.tools.base import ToolException
+from pydantic import ValidationError
 
-from intentkit.tools.cn_stock import Config, ToolStates, get_tools
+from intentkit.tools.cn_stock import get_tools
 from intentkit.tools.cn_stock.base import (
     CNStockBaseTool,
     market_of,
@@ -76,9 +77,9 @@ def test_market_of_classifies_correctly():
 
 def test_quote_input_validation():
     GetQuoteInput(symbols=["600519"])
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         GetQuoteInput(symbols=[])
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         GetQuoteInput(symbols=["600519"] * 51)
 
 
@@ -87,9 +88,9 @@ def test_kline_input_defaults_and_bounds():
     assert inp.period == "daily"
     assert inp.days_back == 90
     assert inp.adjust == "qfq"
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         GetKLineInput(symbol="600519", days_back=0)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         GetKLineInput(symbol="600519", days_back=2000)
 
 
@@ -119,32 +120,23 @@ def test_index_input_default_indices():
 
 
 @pytest.mark.asyncio
-async def test_get_tools_filters_by_state():
-    config: Config = {
-        "enabled": True,
-        "states": ToolStates(
-            get_quote="public",
-            get_kline="private",
-            get_index="public",
-            get_board="disabled",
-            get_capital_flow="disabled",
-            get_news="disabled",
-            get_announcement="disabled",
-            get_financials="disabled",
-            is_trading_day="public",
-        ),
-    }
-    public_only = await get_tools(config, is_private=False)
-    public_names = {s.name for s in public_only}
-    assert "cn_stock_get_quote" in public_names
-    assert "cn_stock_get_index" in public_names
-    assert "cn_stock_is_trading_day" in public_names
-    assert "cn_stock_get_kline" not in public_names
-    assert "cn_stock_get_board" not in public_names
+async def test_get_tools_selects_by_name():
+    """get_tools returns exactly the requested tools; unknown names are skipped."""
+    requested = [
+        "cn_stock_get_quote",
+        "cn_stock_get_index",
+        "cn_stock_is_trading_day",
+        "cn_stock_nonexistent",
+    ]
+    tools = await get_tools(requested)
+    names = [t.name for t in tools]
+    assert names == [
+        "cn_stock_get_quote",
+        "cn_stock_get_index",
+        "cn_stock_is_trading_day",
+    ]
 
-    with_private = await get_tools(config, is_private=True)
-    private_names = {s.name for s in with_private}
-    assert "cn_stock_get_kline" in private_names
+    assert await get_tools([]) == []
 
 
 @pytest.mark.asyncio

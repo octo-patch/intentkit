@@ -12,6 +12,9 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from intentkit.config.base import Base
 
+SLUG_MAX_LENGTH = 60
+MAX_TAGS = 3
+
 
 class AgentPostBase(BaseModel):
     """Base model for AgentPost."""
@@ -50,7 +53,7 @@ class AgentPostBase(BaseModel):
         PydanticField(
             default=None,
             description="URL slug for the post",
-            max_length=60,
+            max_length=SLUG_MAX_LENGTH,
             pattern="^[a-zA-Z0-9-]+$",
         ),
     ] = None
@@ -66,7 +69,7 @@ class AgentPostBase(BaseModel):
         list[str],
         PydanticField(
             description="List of tags",
-            max_length=3,
+            max_length=MAX_TAGS,
         ),
     ] = []
 
@@ -80,8 +83,6 @@ class AgentPostBase(BaseModel):
 
 class AgentPostCreate(AgentPostBase):
     """Model for creating an AgentPost."""
-
-    pass
 
 
 class AgentPost(AgentPostBase):
@@ -193,7 +194,7 @@ class AgentPostBrief(BaseModel):
     ]
 
     @classmethod
-    def from_table(cls, table: "AgentPostTable") -> "AgentPostBrief":
+    def from_table(cls, table: AgentPostTable) -> AgentPostBrief:
         """Create a brief post from a table row, truncating markdown to 500 chars."""
         excerpt = table.excerpt
         if excerpt is None:

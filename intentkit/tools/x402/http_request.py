@@ -9,9 +9,11 @@ from langchain_core.tools import ArgsSchema, ToolException
 from pydantic import BaseModel, Field
 from web3.exceptions import TimeExhausted, Web3RPCError
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.x402.base import X402BaseTool, format_prefund_web3_error
 from intentkit.tools.x402.httpx_compat import PaymentError, X402HttpxCompatClient
 from intentkit.utils.error import IntentKitAPIError
+from intentkit.utils.ssrf import httpx_request_guard
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,7 @@ logger = logging.getLogger(__name__)
 class X402HttpRequestInput(BaseModel):
     """Arguments for a generic x402 HTTP request."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     method: str = Field(description="HTTP method (GET or POST).")
     url: str = Field(description="Absolute URL (must include scheme and host).")
     headers: dict[str, str] | None = Field(
@@ -47,6 +50,8 @@ class X402HttpRequest(X402BaseTool):
     """Tool that performs signed HTTP requests via the x402 client."""
 
     name: str = "x402_http_request"
+    title: str = "HTTP Request"
+    team_only: bool = True
     description: str = "Send a paid HTTP request using the x402 protocol. Returns response status and body."
     price: Decimal = Decimal("1")
     args_schema: ArgsSchema | None = X402HttpRequestInput
@@ -54,6 +59,7 @@ class X402HttpRequest(X402BaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         method: str,
         url: str,
         headers: dict[str, str] | None = None,
@@ -97,12 +103,14 @@ class X402HttpRequest(X402BaseTool):
 
         try:
             await self._prefund_safe_wallet(
+                wallet_address=wallet_address,
                 method=method_upper,
                 request_kwargs=request_kwargs,
                 timeout=timeout,
             )
-            account = await self.get_signer()
+            account = await self.get_signer(wallet_address)
             async with X402HttpxCompatClient(
+                event_hooks={"request": [httpx_request_guard]},
                 account=account,
                 timeout=timeout,
             ) as client:
@@ -118,6 +126,7 @@ class X402HttpRequest(X402BaseTool):
                     tool_name=self.name,
                     method=method_upper,
                     url=url,
+                    wallet_address=wallet_address,
                     pay_to_fallback=pay_to,
                 )
 
@@ -135,7 +144,7 @@ class X402HttpRequest(X402BaseTool):
                 f"HTTP {exc.response.status_code} - {exc.response.text}"
             ) from exc
         except httpx.RequestError as exc:
-            raise ToolException(f"Failed to connect to {url} - {str(exc)}") from exc
+            raise ToolException(f"Failed to connect to {url} - {exc!s}") from exc
         except (TimeExhausted, Web3RPCError) as exc:
             if isinstance(exc, Web3RPCError):
                 self.alert_prefund_paymaster_gas_shortage(
@@ -153,4 +162,4 @@ class X402HttpRequest(X402BaseTool):
         except ToolException:
             raise
         except Exception as exc:
-            raise ToolException(f"Unexpected error occurred - {str(exc)}") from exc
+            raise ToolException(f"Unexpected error occurred - {exc!s}") from exc

@@ -58,6 +58,7 @@ class GetTokensInfo(DexScreenerBaseTool):
     """
 
     name: str = "dexscreener_get_tokens_info"
+    title: str = "Get Tokens Info"
     description: str = f"Get trading pair info for multiple tokens (up to {MAX_TOKENS_BATCH}) by chain ID and addresses."
     args_schema: ArgsSchema | None = GetTokensInfoInput
 
@@ -200,8 +201,9 @@ class GetTokensInfo(DexScreenerBaseTool):
         self, e: Exception, query_info: str
     ) -> str:
         """Formats unexpected runtime exception details into a JSON string."""
-        logger.exception(
-            f"An unexpected runtime error occurred in get_tokens_info tool _arun method for {query_info}: {e}"
+        logger.error(
+            f"An unexpected runtime error occurred in get_tokens_info tool _arun method for {query_info}: {e}",
+            exc_info=e,
         )
         return create_error_response(
             error_type="runtime_error",

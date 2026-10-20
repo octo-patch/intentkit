@@ -82,6 +82,39 @@ export function TopNav() {
         >
           Discover
         </Link>
+        <Link
+          href="/links"
+          className={cn(
+            "transition-colors hover:text-foreground/80",
+            pathname.startsWith("/links")
+              ? "text-foreground font-bold"
+              : "text-foreground/60"
+          )}
+        >
+          Links
+        </Link>
+        <Link
+          href="/wallets"
+          className={cn(
+            "transition-colors hover:text-foreground/80",
+            pathname.startsWith("/wallets")
+              ? "text-foreground font-bold"
+              : "text-foreground/60"
+          )}
+        >
+          Wallets
+        </Link>
+        <Link
+          href="/memory"
+          className={cn(
+            "transition-colors hover:text-foreground/80",
+            pathname.startsWith("/memory")
+              ? "text-foreground font-bold"
+              : "text-foreground/60"
+          )}
+        >
+          Memory
+        </Link>
       </nav>
     </div>
   );

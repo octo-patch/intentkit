@@ -9,6 +9,7 @@ from langchain_core.tools.base import ToolException
 from pydantic import BaseModel, Field
 from web3 import Web3
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.opensea.constants import OPENSEA_PROTOCOL_ADDRESS
 from intentkit.tools.opensea.onchain_base import OpenSeaOnChainBaseTool
 
@@ -18,12 +19,8 @@ NAME = "opensea_update_listing"
 class UpdateListingInput(BaseModel):
     """Input for updating an OpenSea listing price."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     order_hash: str = Field(description="The order hash of the listing to update")
-    chain: str = Field(
-        description=(
-            "The blockchain name (e.g., 'ethereum', 'matic', 'base', 'arbitrum')"
-        )
-    )
     protocol_address: str = Field(
         description="The protocol contract address (from get_listings)"
     )
@@ -44,19 +41,20 @@ class OpenSeaUpdateListing(OpenSeaOnChainBaseTool):
     """Update the price of an existing NFT listing on OpenSea."""
 
     name: str = NAME
+    title: str = "Update Listing"
+    team_only: bool = True
     description: str = (
         "Update the price of an existing NFT listing on OpenSea. "
         "This cancels the old listing and creates a new one with the new price. "
-        "Requires the old order details and the new price. "
-        "Requires an on-chain wallet."
+        "Requires the old order details and the new price."
     )
     args_schema: ArgsSchema | None = UpdateListingInput
 
     @override
     async def _arun(
         self,
+        wallet_address: str,
         order_hash: str,
-        chain: str,
         protocol_address: str,
         contract_address: str,
         token_id: str,
@@ -65,10 +63,13 @@ class OpenSeaUpdateListing(OpenSeaOnChainBaseTool):
         **kwargs: Any,
     ) -> str:
         try:
-            if not self.is_onchain_capable():
-                raise ToolException(
-                    "This agent does not have an on-chain wallet configured"
-                )
+            # Validate signing authorization and team ownership before
+            # cancelling the old listing, so a forbidden call has no effect.
+            # The wallet also determines the network to operate on — the
+            # OpenSea chain must match the network the order is signed for.
+            team_wallet = await self.get_signing_wallet(wallet_address)
+            network_id = team_wallet.network
+            chain = self._get_chain_name(network_id)
 
             _, cancel_error = await self._post(
                 f"/orders/chain/{chain}/protocol/{protocol_address}/{order_hash}/cancel",
@@ -81,9 +82,8 @@ class OpenSeaUpdateListing(OpenSeaOnChainBaseTool):
                     }
                 )
 
-            wallet_address = await self.get_wallet_address()
             new_price_wei = Web3.to_wei(Decimal(new_price), "ether")
-            counter = await self._get_seaport_counter(wallet_address)
+            counter = await self._get_seaport_counter(wallet_address, network_id)
 
             order_params = self._build_listing_order(
                 offerer=wallet_address,
@@ -94,7 +94,9 @@ class OpenSeaUpdateListing(OpenSeaOnChainBaseTool):
                 counter=counter,
             )
 
-            signature = await self._sign_seaport_order(order_params)
+            signature = await self._sign_seaport_order(
+                order_params, wallet_address, network_id
+            )
 
             data, error = await self._post(
                 f"/orders/{chain}/seaport/listings",

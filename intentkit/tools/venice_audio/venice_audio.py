@@ -27,6 +27,7 @@ class VeniceAudioTool(VeniceAudioBaseTool):
     """
 
     name: str = "venice_audio_text_to_speech"
+    title: str = "Text to Speech"
     description: str = (
         "Convert text to speech using Venice AI. "
         "Supports speed adjustment and multiple audio formats."
@@ -46,17 +47,12 @@ class VeniceAudioTool(VeniceAudioBaseTool):
         Stores the resulting audio using the generic S3 helper.
         Returns a dictionary containing audio details on success, or API error details on failure.
         """
-        context = self.get_context()
         final_response_format = response_format if response_format else "mp3"
         tts_model_id = "tts-kokoro"  # API model used
 
         try:
             # --- Setup Checks ---
             api_key = self.get_api_key()
-
-            _, error_info = self.validate_voice_model(context, voice_model)
-            if error_info:
-                return error_info
 
             if not api_key:
                 message = (
@@ -87,8 +83,6 @@ class VeniceAudioTool(VeniceAudioBaseTool):
                     "voice_model": voice_model,
                     "requested_format": final_response_format,
                 }
-
-            await self.apply_rate_limit(context)
 
             # --- Prepare API Call ---
             payload: dict[str, Any] = {
@@ -241,9 +235,8 @@ class VeniceAudioTool(VeniceAudioBaseTool):
             details = str(e)  # The string representation of the exception
 
             # Log the error with full traceback for debugging
-            logger.error(
-                f"Venice Audio Tool Global Error ({error_type}): {message} | Details: {details}",
-                exc_info=True,
+            logger.exception(
+                f"Venice Audio Tool Global Error ({error_type}): {message} | Details: {details}"
             )
 
             return {

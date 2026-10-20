@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from web3 import Web3
 
 from intentkit.tools.erc20.constants import ERC20_ABI
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.weth.base import WethBaseTool
 from intentkit.tools.weth.constants import WETH_ABI, get_weth_address
 
@@ -16,6 +17,7 @@ from intentkit.tools.weth.constants import WETH_ABI, get_weth_address
 class UnwrapEthInput(BaseModel):
     """Input schema for unwrap_eth."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     amount_to_unwrap: str = Field(
         ...,
         description="Amount of WETH to unwrap (e.g. '0.1')",
@@ -29,17 +31,21 @@ class WETHUnwrapEth(WethBaseTool):
     """
 
     name: str = "weth_unwrap_eth"
+    title: str = "Unwrap WETH"
+    team_only: bool = True
     description: str = "Unwrap WETH to native ETH (1:1 conversion). Ensure sufficient WETH balance and ETH for gas."
     args_schema: ArgsSchema | None = UnwrapEthInput
 
     @override
     async def _arun(
         self,
+        wallet_address: str,
         amount_to_unwrap: str,
     ) -> str:
         """Unwrap WETH to ETH.
 
         Args:
+            wallet_address: Address of the team wallet to use.
             amount_to_unwrap: Amount of WETH to unwrap in human-readable format.
 
         Returns:
@@ -47,7 +53,7 @@ class WETHUnwrapEth(WethBaseTool):
         """
         try:
             # Get the unified wallet
-            wallet = await self.get_unified_wallet()
+            wallet = await self.get_unified_wallet(wallet_address)
             network_id = wallet.network_id
 
             # Get WETH address for this network

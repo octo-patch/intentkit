@@ -17,15 +17,11 @@ interface AgentCardProps {
 
 export function AgentCard({ agent }: AgentCardProps) {
   const displayName = agent.name || agent.id;
-  const displayDescription = agent.description || agent.purpose || "No description available";
+  const displayDescription = agent.description || "No description available";
   const resolvedImage = getImageUrl(agent.picture);
 
   // Extract active toolsets
-  const activeTools = agent.tools
-    ? Object.entries(agent.tools)
-      .filter(([, config]) => (config as { enabled: boolean }).enabled)
-      .map(([category]) => category)
-    : [];
+  const activeTools = agent.tools ?? [];
 
   const handleImageError = (event: React.SyntheticEvent<HTMLImageElement>) => {
     if (!resolvedImage) return;

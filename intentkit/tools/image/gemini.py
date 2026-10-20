@@ -43,7 +43,7 @@ class GeminiImageBase(ImageBaseTool):
                 for img_bytes in images:
                     contents.append(Image.open(BytesIO(img_bytes)))
 
-            response = client.models.generate_content(
+            response = await client.aio.models.generate_content(
                 model=self.native_model,
                 contents=contents,
                 config=types.GenerateContentConfig(
@@ -73,19 +73,35 @@ class GeminiImagePro(GeminiImageBase):
     """Generate images using Gemini 3 Pro."""
 
     name: str = "image_gemini_pro"
+    title: str = "Nano Banana Pro"
     description: str = "Generate images from text prompts using Gemini 3 Pro."
     price: Decimal = Decimal("130")
-    native_model: str = "gemini-3-pro-image-preview"
-    openrouter_model: str = "google/gemini-3-pro-image-preview"
+    native_model: str = "gemini-3-pro-image"
+    openrouter_model: str = "google/gemini-3-pro-image"
 
 
 class GeminiImageFlash(GeminiImageBase):
     """Generate images using Gemini 3.1 Flash."""
 
     name: str = "image_gemini_flash"
+    title: str = "Nano Banana 2"
     description: str = (
         "Generate images from text prompts using Gemini 3.1 Flash (faster, cheaper)."
     )
     price: Decimal = Decimal("70")
-    native_model: str = "gemini-3.1-flash-image-preview"
-    openrouter_model: str = "google/gemini-3.1-flash-image-preview"
+    native_model: str = "gemini-3.1-flash-image"
+    openrouter_model: str = "google/gemini-3.1-flash-image"
+
+
+class GeminiImageFlashLite(GeminiImageBase):
+    """Generate images using Gemini 3.1 Flash Lite."""
+
+    name: str = "image_gemini_flash_lite"
+    title: str = "Nano Banana 2 Lite"
+    description: str = (
+        "Generate images from text prompts using Gemini 3.1 Flash Lite "
+        "(fastest, cheapest, 1K resolution only)."
+    )
+    price: Decimal = Decimal("35")
+    native_model: str = "gemini-3.1-flash-lite-image"
+    openrouter_model: str = "google/gemini-3.1-flash-lite-image"

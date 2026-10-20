@@ -11,11 +11,13 @@ from web3 import Web3
 from intentkit.tools.erc20.constants import ERC20_ABI
 from intentkit.tools.morpho.base import MorphoBaseTool
 from intentkit.tools.morpho.constants import METAMORPHO_ABI
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 
 class WithdrawInput(BaseModel):
     """Input schema for Morpho withdraw."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     vault_address: str = Field(..., description="Morpho Vault address")
     assets: str = Field(
         ...,
@@ -31,21 +33,24 @@ class MorphoWithdraw(MorphoBaseTool):
     """
 
     name: str = "morpho_withdraw"
+    title: str = "Vault Withdraw"
+    team_only: bool = True
     description: str = "Withdraw assets from a Morpho Vault. Ensure sufficient vault shares. Amount in whole units."
     args_schema: ArgsSchema | None = WithdrawInput
 
     @override
     async def _arun(
         self,
+        wallet_address: str,
         vault_address: str,
         assets: str,
         receiver: str,
         **kwargs: Any,
     ) -> str:
         try:
-            wallet = await self.get_unified_wallet()
+            wallet = await self.get_unified_wallet(wallet_address)
             self._validate_network(wallet.network_id)
-            w3 = self.web3_client()
+            w3 = wallet.w3
 
             checksum_vault = w3.to_checksum_address(vault_address)
             checksum_receiver = w3.to_checksum_address(receiver)

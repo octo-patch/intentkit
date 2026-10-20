@@ -9,14 +9,18 @@ Uses Redis for distributed rate limiting with sliding window algorithm.
 
 import logging
 import time
+from collections.abc import Callable
 from queue import Queue
 from threading import Thread
-from typing import Callable, override
+from typing import override
 
 from redis import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from intentkit.utils.alert import is_alert_enabled, send_alert
 from intentkit.utils.logging import ContextFilter
+from intentkit.utils.readiness import wait_until_ready_sync
 
 # Global sync Redis client for alert handler
 _sync_redis_client: Redis | None = None
@@ -25,12 +29,20 @@ _sync_redis_client: Redis | None = None
 RATE_LIMIT_KEY_PREFIX = "intentkit:alert:rate_limit"
 
 
+# Mirrors intentkit.config.redis; duplicated because utils sits below config in
+# the import layering and so cannot import it.
+ALERT_REDIS_SOCKET_TIMEOUT = 5.0
+ALERT_REDIS_CONNECT_TIMEOUT = 5.0
+
+
 def init_alert_redis(
     host: str,
     port: int = 6379,
     db: int = 0,
     password: str | None = None,
     ssl: bool = False,
+    socket_timeout: float = ALERT_REDIS_SOCKET_TIMEOUT,
+    socket_connect_timeout: float = ALERT_REDIS_CONNECT_TIMEOUT,
 ) -> Redis:
     """Initialize synchronous Redis client for alert handler.
 
@@ -40,6 +52,8 @@ def init_alert_redis(
         db: Redis database number (default: 0)
         password: Redis password (default: None)
         ssl: Whether to use SSL (default: False)
+        socket_timeout: Per-command socket timeout in seconds
+        socket_connect_timeout: Connection establishment timeout in seconds
 
     Returns:
         Redis: The initialized sync Redis client
@@ -56,9 +70,17 @@ def init_alert_redis(
         password=password,
         ssl=ssl,
         decode_responses=True,
+        socket_timeout=socket_timeout,
+        socket_connect_timeout=socket_connect_timeout,
     )
-    # Test connection
-    _ = _sync_redis_client.ping()
+    # Test the connection. This runs at config-import time — earlier than any
+    # lifespan init — so it is the first Redis touch in every process; wait
+    # for Redis to come up instead of crash-looping on a restart.
+    wait_until_ready_sync(
+        "Redis (alert)",
+        _sync_redis_client.ping,
+        (RedisConnectionError, RedisTimeoutError),
+    )
     return _sync_redis_client
 
 

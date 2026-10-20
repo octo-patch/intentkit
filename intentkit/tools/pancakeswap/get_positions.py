@@ -3,49 +3,54 @@
 from decimal import Decimal
 from typing import Any, override
 
+from langchain_core.tools import ArgsSchema
 from langchain_core.tools.base import ToolException
+from pydantic import BaseModel, Field
 from web3 import Web3
 
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 from intentkit.tools.pancakeswap.base import PancakeSwapBaseTool
 from intentkit.tools.pancakeswap.constants import (
     MASTERCHEF_V3_ABI,
     MASTERCHEF_V3_ADDRESSES,
-    NETWORK_TO_CHAIN_ID,
     POSITION_MANAGER_ABI,
     POSITION_MANAGER_ADDRESS,
 )
 from intentkit.tools.pancakeswap.utils import get_decimals, get_token_symbol
+from intentkit.wallets.web3 import get_async_web3_client
 
 NAME = "pancakeswap_get_positions"
 MAX_POSITIONS = 20
+
+
+class PancakeSwapGetPositionsInput(BaseModel):
+    """Input for PancakeSwap get positions."""
+
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
 
 
 class PancakeSwapGetPositions(PancakeSwapBaseTool):
     """View PancakeSwap V3 liquidity positions."""
 
     name: str = NAME
+    title: str = "View Positions"
     description: str = (
-        "View your PancakeSwap V3 liquidity positions including pool details, "
+        "View PancakeSwap V3 liquidity positions including pool details, "
         "liquidity amounts, uncollected fees, and farming status."
     )
+    args_schema: ArgsSchema | None = PancakeSwapGetPositionsInput
 
     @override
-    async def _arun(self, **kwargs: Any) -> str:
+    async def _arun(self, wallet_address: str, **kwargs: Any) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
+            # Read-only: just validate the wallet belongs to the agent's team.
+            # The network follows the wallet.
+            team_wallet = await self.resolve_wallet(wallet_address)
+            network_id = team_wallet.network
+            chain_id = self._resolve_chain_id(network_id)
 
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"PancakeSwap not supported on {network_id}. "
-                    f"Supported: {', '.join(NETWORK_TO_CHAIN_ID.keys())}"
-                )
-
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
-            wallet_address = Web3.to_checksum_address(wallet.address)
+            w3 = get_async_web3_client(network_id)
+            wallet_address = Web3.to_checksum_address(wallet_address)
 
             pm = w3.eth.contract(
                 address=Web3.to_checksum_address(POSITION_MANAGER_ADDRESS),
@@ -71,7 +76,10 @@ class PancakeSwapGetPositions(PancakeSwapBaseTool):
             # Get staked positions from persisted data
             masterchef_addr = MASTERCHEF_V3_ADDRESSES.get(chain_id)
             if masterchef_addr:
-                staked_data = await self.get_agent_tool_data("staked_token_ids")
+                # Staked token IDs are cached per wallet address.
+                staked_data = await self.get_agent_tool_data(
+                    f"staked_token_ids:{wallet_address.lower()}"
+                )
                 if staked_data and "token_ids" in staked_data:
                     mc = w3.eth.contract(
                         address=Web3.to_checksum_address(masterchef_addr),
@@ -99,7 +107,7 @@ class PancakeSwapGetPositions(PancakeSwapBaseTool):
                             )
                             if entry:
                                 positions.append(entry)
-                        except Exception:
+                        except Exception:  # noqa: S112 - expected miss while probing candidates
                             continue
 
             if not positions:

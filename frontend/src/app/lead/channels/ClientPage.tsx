@@ -514,3 +514,4 @@ function WechatCard({ channel }: { channel?: TeamChannel }) {
     </Card>
   );
 }
+

@@ -37,9 +37,6 @@ async def test_expense_message_soft_off():
     mock_team_account.free_credits = Decimal("0")
     mock_team_account.reward_credits = Decimal("0")
 
-    mock_agent_data = MagicMock()
-    mock_agent_data.evm_wallet_address = "0x123"
-
     def side_effect_refresh(instance: Any) -> None:
         instance.created_at = datetime.now()
 
@@ -65,16 +62,12 @@ async def test_expense_message_soft_off():
             "intentkit.models.app_setting.AppSetting.payment", new_callable=AsyncMock
         ) as mock_payment_settings,
         patch(
-            "intentkit.models.agent_data.AgentData.get", new_callable=AsyncMock
-        ) as mock_agent_data_get,
-        patch(
             "intentkit.core.credit.expense.accumulate_hourly_base_llm_amount",
             new_callable=AsyncMock,
         ),
     ):
         mock_payment_settings.return_value.fee_platform_percentage = Decimal("20.0")
         mock_get_or_create.return_value = mock_team_account
-        mock_agent_data_get.return_value = mock_agent_data
 
         mock_session = AsyncMock()
         mock_session.add = MagicMock()
@@ -139,9 +132,6 @@ async def test_expense_message_enabled():
     mock_team_account.free_credits = Decimal("0")
     mock_team_account.reward_credits = Decimal("0")
 
-    mock_agent_data = MagicMock()
-    mock_agent_data.evm_wallet_address = "0x123"
-
     # Mock return value for income_in_session
     mock_income_account = MagicMock()
     mock_income_account.id = "acc_income"
@@ -171,9 +161,6 @@ async def test_expense_message_enabled():
             "intentkit.models.app_setting.AppSetting.payment", new_callable=AsyncMock
         ) as mock_payment_settings,
         patch(
-            "intentkit.models.agent_data.AgentData.get", new_callable=AsyncMock
-        ) as mock_agent_data_get,
-        patch(
             "intentkit.core.credit.expense.accumulate_hourly_base_llm_amount",
             new_callable=AsyncMock,
         ),
@@ -187,7 +174,6 @@ async def test_expense_message_enabled():
             mock_team_account,
             {},
         )  # Return account and details
-        mock_agent_data_get.return_value = mock_agent_data
         mock_income.return_value = mock_income_account
 
         mock_session = AsyncMock()
@@ -278,9 +264,6 @@ async def test_expense_summarize_soft_off():
     mock_team_account.free_credits = Decimal("0")
     mock_team_account.reward_credits = Decimal("0")
 
-    mock_agent_data = MagicMock()
-    mock_agent_data.evm_wallet_address = "0x123"
-
     def side_effect_refresh(instance: Any) -> None:
         instance.created_at = datetime.now()
 
@@ -306,16 +289,12 @@ async def test_expense_summarize_soft_off():
             "intentkit.models.app_setting.AppSetting.payment", new_callable=AsyncMock
         ) as mock_payment_settings,
         patch(
-            "intentkit.models.agent_data.AgentData.get", new_callable=AsyncMock
-        ) as mock_agent_data_get,
-        patch(
             "intentkit.core.credit.expense.accumulate_hourly_base_llm_amount",
             new_callable=AsyncMock,
         ),
     ):
         mock_payment_settings.return_value.fee_platform_percentage = Decimal("20.0")
         mock_get_or_create.return_value = mock_team_account
-        mock_agent_data_get.return_value = mock_agent_data
 
         mock_session = AsyncMock()
         mock_session.add = MagicMock()

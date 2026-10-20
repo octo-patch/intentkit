@@ -68,6 +68,7 @@ class WalletHistory(PortfolioBaseTool):
     """
 
     name: str = "portfolio_wallet_history"
+    title: str = "Wallet Transaction History"
     description: str = "Get transaction history for a wallet address."
     args_schema: ArgsSchema | None = WalletHistoryInput
 
@@ -139,7 +140,7 @@ class WalletHistory(PortfolioBaseTool):
             )
         except ToolException:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.error(
                 "wallet_history.py: Error fetching wallet history", exc_info=exc
             )

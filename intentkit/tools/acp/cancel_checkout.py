@@ -5,7 +5,7 @@ from typing import Any, override
 from langchain_core.tools import ArgsSchema
 from pydantic import BaseModel, Field
 
-from .base import AcpBaseTool, acp_request, validate_url
+from .base import AcpBaseTool, acp_request
 
 
 class AcpCancelCheckoutInput(BaseModel):
@@ -25,6 +25,7 @@ class AcpCancelCheckout(AcpBaseTool):
     """
 
     name: str = "acp_cancel_checkout"
+    title: str = "Cancel Checkout"
     description: str = (
         "Cancel an ACP checkout session. "
         "Only works for sessions that have not yet been paid."
@@ -39,7 +40,6 @@ class AcpCancelCheckout(AcpBaseTool):
         timeout: float = 30.0,
         **_: Any,
     ) -> str:
-        validate_url(merchant_url)
         url = f"{merchant_url.rstrip('/')}/checkout_sessions/{session_id}/cancel"
         response = await acp_request("POST", url, timeout=timeout)
 

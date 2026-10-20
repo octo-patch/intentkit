@@ -28,6 +28,7 @@ class CryptoCompareFetchTopExchanges(CryptoCompareBaseTool):
     """Tool for fetching top exchanges from CryptoCompare."""
 
     name: str = "cryptocompare_fetch_top_exchanges"
+    title: str = "Fetch Top Exchanges"
     description: str = "Fetch top exchanges for a crypto pair, ranked by volume."
     args_schema: ArgsSchema | None = CryptoCompareFetchTopExchangesInput
 
@@ -72,7 +73,7 @@ class CryptoCompareFetchTopExchanges(CryptoCompareBaseTool):
 
             # Convert to list of CryptoExchange objects
             result = []
-            if "Data" in exchanges_data and exchanges_data["Data"]:
+            if exchanges_data.get("Data"):
                 for item in exchanges_data["Data"]:
                     if len(result) >= limit:
                         break

@@ -2,8 +2,9 @@ import asyncio
 import importlib.util
 import logging
 import signal
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 
 import sentry_sdk
 from apscheduler.events import (
@@ -23,6 +24,8 @@ from sqlalchemy import select
 from intentkit.config.config import config
 from intentkit.config.db import get_session, init_db
 from intentkit.config.redis import (
+    REDIS_CONNECT_TIMEOUT,
+    REDIS_SOCKET_TIMEOUT,
     clean_heartbeat,
     get_redis,
     init_redis,
@@ -53,6 +56,10 @@ jobstores = {
         ssl=config.redis_ssl,
         jobs_key="intentkit:autonomous:jobs",
         run_times_key="intentkit:autonomous:run_times",
+        # RedisJobStore forwards extra kwargs to its own Redis client, which
+        # would otherwise pick up the library defaults instead of ours.
+        socket_timeout=REDIS_SOCKET_TIMEOUT,
+        socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
     )
 }
 logger.info("autonomous scheduler use redis store: %s", config.redis_host)
@@ -165,6 +172,25 @@ _legacy_migration_done = False
 _legacy_migration_alerted = False
 
 
+def _load_migration_module() -> ModuleType:
+    """Import the temporary migration script by path (scripts/ is not a package).
+
+    Runs in a worker thread: resolving the path and then compiling/executing the
+    module together with its transitive imports is all blocking work.
+    """
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "migrate_autonomous_to_team.py"
+    )
+    spec = importlib.util.spec_from_file_location("migrate_autonomous_to_team", script)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load migration script at {script}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 async def run_legacy_autonomous_migration() -> bool:
     """Migrate legacy per-agent tasks into autonomous_tasks.
 
@@ -178,22 +204,11 @@ async def run_legacy_autonomous_migration() -> bool:
     """
     global _legacy_migration_alerted
     try:
-        script = (
-            Path(__file__).resolve().parent.parent
-            / "scripts"
-            / "migrate_autonomous_to_team.py"
-        )
-        spec = importlib.util.spec_from_file_location(
-            "migrate_autonomous_to_team", script
-        )
-        if spec is None or spec.loader is None:
-            raise ImportError(f"cannot load migration script at {script}")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = await asyncio.to_thread(_load_migration_module)
         _ = await module.migrate_if_table_empty()
         return True
     except Exception as e:
-        logger.error("Legacy autonomous migration failed: %s", e, exc_info=True)
+        logger.exception("Legacy autonomous migration failed")
         if not _legacy_migration_alerted:
             _legacy_migration_alerted = True
             try:
@@ -271,7 +286,6 @@ async def schedule_agent_autonomous_tasks():
                 task.cron,
                 task.prompt,
                 task.enabled,
-                task.has_memory,
                 task.target_agent_id,
             )
         )
@@ -304,9 +318,13 @@ async def schedule_agent_autonomous_tasks():
                         owner,
                         task.id,
                         task.prompt,
-                        task.has_memory,
-                        task.target_agent_id,
                     ],
+                    # Keyword so newly stored jobs skip the legacy positional
+                    # slot; jobs stored earlier still fill it positionally via
+                    # run_autonomous_task's _legacy_has_memory param. Drop that
+                    # param one release after this change ships (the startup
+                    # sweep rewrites every stored job).
+                    kwargs={"target_agent_id": task.target_agent_id},
                     replace_existing=True,
                 )
             else:
@@ -352,14 +370,14 @@ if __name__ == "__main__":
                 "interval",
                 id=HEAD_JOB_ID,
                 minutes=1,
-                next_run_time=datetime.now(),
+                next_run_time=datetime.now(UTC),
                 replace_existing=True,
             )
 
-        # Add job to send heartbeat every 5 minutes
+        # Add job to send heartbeat every minute
         _ = scheduler.add_job(
             send_autonomous_heartbeat,
-            trigger=CronTrigger(minute="*", timezone="UTC"),  # Run every minute
+            trigger=CronTrigger(minute="*", timezone="UTC"),
             id="autonomous_heartbeat",
             name="Autonomous Heartbeat",
             replace_existing=True,

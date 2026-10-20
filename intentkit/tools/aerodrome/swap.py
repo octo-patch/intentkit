@@ -11,7 +11,6 @@ from web3 import Web3
 
 from intentkit.tools.aerodrome.base import AerodromeBaseTool
 from intentkit.tools.aerodrome.constants import (
-    NETWORK_TO_CHAIN_ID,
     QUOTER_V2_ABI,
     QUOTER_V2_ADDRESS,
     SWAP_ROUTER_ABI,
@@ -24,6 +23,7 @@ from intentkit.tools.aerodrome.utils import (
     get_decimals,
     resolve_token,
 )
+from intentkit.tools.onchain import WALLET_ADDRESS_ARG_DESCRIPTION
 
 NAME = "aerodrome_swap"
 
@@ -31,6 +31,7 @@ NAME = "aerodrome_swap"
 class AerodromeSwapInput(BaseModel):
     """Input for Aerodrome swap."""
 
+    wallet_address: str = Field(description=WALLET_ADDRESS_ARG_DESCRIPTION)
     token_in: str = Field(
         description="Input token address, or 'native' for ETH on Base"
     )
@@ -50,6 +51,8 @@ class AerodromeSwap(AerodromeBaseTool):
     """Execute an Aerodrome Slipstream token swap on Base."""
 
     name: str = NAME
+    title: str = "Execute Swap"
+    team_only: bool = True
     description: str = (
         "Execute a token swap on Aerodrome Slipstream (Base). "
         "Handles ERC20 approval automatically. "
@@ -60,6 +63,7 @@ class AerodromeSwap(AerodromeBaseTool):
     @override
     async def _arun(
         self,
+        wallet_address: str,
         token_in: str,
         token_out: str,
         amount: str,
@@ -67,19 +71,11 @@ class AerodromeSwap(AerodromeBaseTool):
         **kwargs: Any,
     ) -> str:
         try:
-            network_id = self.get_agent_network_id()
-            if not network_id:
-                raise ToolException("Agent network_id is not configured")
+            wallet = await self.get_unified_wallet(wallet_address)
+            # Validate the wallet network (Aerodrome is Base-only).
+            self._resolve_chain_id(wallet.network_id)
 
-            chain_id = NETWORK_TO_CHAIN_ID.get(network_id)
-            if not chain_id:
-                raise ToolException(
-                    f"Aerodrome is only supported on Base. "
-                    f"Current network: {network_id}"
-                )
-
-            wallet = await self.get_unified_wallet()
-            w3 = self.web3_client()
+            w3 = wallet.w3
 
             is_native_in = token_in.lower() == "native"
             addr_in = resolve_token(token_in)
@@ -112,7 +108,7 @@ class AerodromeSwap(AerodromeBaseTool):
                     if result[0] > best_out:
                         best_out = result[0]
                         best_tick_spacing = tick_spacing
-                except Exception:
+                except Exception:  # noqa: S112 - expected miss while probing candidates
                     continue
 
             if best_out == 0:

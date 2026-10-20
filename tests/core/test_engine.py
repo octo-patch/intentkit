@@ -1,23 +1,35 @@
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain.agents.middleware import ToolRetryMiddleware
+from langchain.agents.middleware import (
+    ContextEditingMiddleware,
+    ModelRetryMiddleware,
+    ToolRetryMiddleware,
+)
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from langchain_core.tools.base import ToolException
 
 from intentkit.core.engine import stream_agent
+from intentkit.core.engine.stream import _resolve_payer
 from intentkit.core.executor import (
+    _should_retry_model_failure,
     agent_executor,
     agents,
     agents_updated,
     build_executor,
 )
-from intentkit.core.middleware import ToolBindingMiddleware
+from intentkit.core.middleware import TodoMiddleware, ToolBindingMiddleware
 from intentkit.models.agent import Agent, AgentData
 from intentkit.models.agent.core import AgentVisibility
-from intentkit.models.chat import AuthorType, ChatMessage, ChatMessageAttachmentType
+from intentkit.models.chat import (
+    AuthorType,
+    ChatMessage,
+    ChatMessageAttachmentType,
+    ChatMessageCreate,
+)
 
 # Mock AgentState and AgentContext if needed by type checks
 # But since we use mocks for everything, strict types might be bypassed or we mock them.
@@ -30,16 +42,65 @@ def mock_agent():
         name="Test Agent",
         description="A test agent",
         model="gpt-4o",
-        deployed_at=datetime.now(),
         updated_at=datetime.now(),
         created_at=datetime.now(),
         owner="user_1",
-        tools={},
-        prompt="You are a helper.",
-        temperature=0.7,
+        tools=None,
+        system_prompt="You are a helper.",
         visibility=AgentVisibility.PRIVATE,
         public_info_updated_at=datetime.now(),
     )
+
+
+def _payer_message(
+    author_type: AuthorType,
+    team_id: str | None = None,
+    payer: str | None = None,
+) -> ChatMessageCreate:
+    return ChatMessageCreate(
+        id="msg_1",
+        agent_id="agent-123",
+        chat_id="chat_1",
+        user_id="user_1",
+        author_id="user_1",
+        author_type=author_type,
+        message="hello",
+        team_id=team_id,
+        payer=payer,
+    )
+
+
+def test_resolve_payer_honors_explicit_payer(mock_agent):
+    """An internal sub-agent call's explicit payer wins over channel resolution."""
+    agent = mock_agent.model_copy(update={"team_id": "agent-team"})
+    # Even though author_type would otherwise route to the agent's team, the
+    # explicit payer (forwarded by call_agent) is billed instead.
+    message = _payer_message(
+        AuthorType.TELEGRAM, team_id="user-team", payer="caller-team"
+    )
+    assert _resolve_payer(message, agent) == "caller-team"
+
+
+def test_resolve_payer_user_conversation_bills_user_team(mock_agent):
+    """A normal user conversation bills the message's team."""
+    agent = mock_agent.model_copy(update={"team_id": "agent-team"})
+    message = _payer_message(AuthorType.WEB, team_id="user-team")
+    assert _resolve_payer(message, agent) == "user-team"
+
+
+def test_resolve_payer_platform_channel_bills_agent_team(mock_agent):
+    """Platform channels and triggers bill the agent's own team."""
+    agent = mock_agent.model_copy(update={"team_id": "agent-team"})
+    for channel in (
+        AuthorType.TELEGRAM,
+        AuthorType.DISCORD,
+        AuthorType.TWITTER,
+        AuthorType.API,
+        AuthorType.X402,
+        AuthorType.TRIGGER,
+    ):
+        message = _payer_message(channel, team_id="user-team")
+        assert _resolve_payer(message, agent) == "agent-team"
 
 
 @pytest.fixture
@@ -61,7 +122,7 @@ async def test_build_executor(mock_agent, mock_agent_data):
         patch("langchain.agents.create_agent") as mock_create_lc_agent,
         patch("intentkit.core.executor.get_checkpointer"),
         patch("intentkit.core.executor.pick_summarize_model", return_value="gpt-4o"),
-        patch("intentkit.core.middleware.SummarizationMiddleware"),
+        patch("intentkit.core.summarization.SummarizationMiddleware"),
     ):
         mock_llm_instance = AsyncMock()
         mock_model = AsyncMock()
@@ -72,19 +133,28 @@ async def test_build_executor(mock_agent, mock_agent_data):
 
         executor = await build_executor(mock_agent, mock_agent_data)
 
-        mock_create_model.assert_any_call(
-            model_name=mock_agent.model,
-            temperature=0.7,
-            frequency_penalty=0.0,
-            presence_penalty=0.0,
-        )
+        mock_create_model.assert_any_call(model_name=mock_agent.model)
         mock_create_lc_agent.assert_called_once()
         middleware = mock_create_lc_agent.call_args.kwargs["middleware"]
         tool_retry = next(m for m in middleware if isinstance(m, ToolRetryMiddleware))
         assert callable(tool_retry.retry_on)
         assert tool_retry.retry_on(ToolException("boom")) is False
         assert tool_retry.retry_on(RuntimeError("boom")) is True
+        # Model retries must stay transient-only, and terminal failures must
+        # propagate to the engine's error handling ("error"), never be
+        # recorded as a fake assistant message (the upstream "continue"
+        # default).
+        model_retry = next(m for m in middleware if isinstance(m, ModelRetryMiddleware))
+        assert model_retry.on_failure == "error"
+        assert model_retry.retry_on is _should_retry_model_failure
+        assert not any(isinstance(m, ContextEditingMiddleware) for m in middleware)
         assert executor == mock_create_lc_agent.return_value
+        # The todo system is always on: write_todos bound for every agent
+        # (cron and sub-agent runs lose it per request via interactive_only),
+        # and TodoMiddleware registered unconditionally.
+        tools = mock_create_lc_agent.call_args.kwargs["tools"]
+        assert "write_todos" in _tool_keys(tools)
+        assert any(isinstance(m, TodoMiddleware) for m in middleware)
 
 
 def _tool_keys(tools: list) -> set[str]:
@@ -100,9 +170,9 @@ def _tool_keys(tools: list) -> set[str]:
 
 @pytest.mark.asyncio
 async def test_build_executor_openrouter_tools(mock_agent, mock_agent_data):
-    """OpenRouter agents use our own current_time tool plus the web_search and
-    web_fetch server tools, and never OpenRouter's datetime server tool or the
-    Cloudflare webpage reader tool."""
+    """OpenRouter agents use our own client-side web tools (web_search plus the
+    Cloudflare reader), never OpenRouter's server-side web_search/web_fetch —
+    those corrupt tool calling on continuation turns across every routed model."""
     mock_agent.search_internet = True
 
     with (
@@ -112,7 +182,7 @@ async def test_build_executor_openrouter_tools(mock_agent, mock_agent_data):
         patch("langchain.agents.create_agent") as mock_create_lc_agent,
         patch("intentkit.core.executor.get_checkpointer"),
         patch("intentkit.core.executor.pick_summarize_model", return_value="gpt-4o"),
-        patch("intentkit.core.middleware.SummarizationMiddleware"),
+        patch("intentkit.core.summarization.SummarizationMiddleware"),
     ):
         mock_llm_instance = AsyncMock()
         mock_model = AsyncMock()
@@ -128,12 +198,12 @@ async def test_build_executor_openrouter_tools(mock_agent, mock_agent_data):
             m for m in middleware if isinstance(m, ToolBindingMiddleware)
         )
 
-    keys = _tool_keys(tool_binding.private_tools)
+    keys = _tool_keys(tool_binding.all_tools)
     assert "current_time" in keys
-    assert "openrouter:web_search" in keys
-    assert "openrouter:web_fetch" in keys
-    assert "openrouter:datetime" not in keys
-    assert "read_webpage_cloudflare" not in keys
+    assert "web_search" in keys
+    assert "read_webpage_cloudflare" in keys
+    assert "openrouter:web_search" not in keys
+    assert "openrouter:web_fetch" not in keys
 
 
 @pytest.mark.asyncio
@@ -149,7 +219,7 @@ async def test_build_executor_compatible_tools(mock_agent, mock_agent_data):
         patch("langchain.agents.create_agent") as mock_create_lc_agent,
         patch("intentkit.core.executor.get_checkpointer"),
         patch("intentkit.core.executor.pick_summarize_model", return_value="gpt-4o"),
-        patch("intentkit.core.middleware.SummarizationMiddleware"),
+        patch("intentkit.core.summarization.SummarizationMiddleware"),
     ):
         mock_llm_instance = AsyncMock()
         mock_model = AsyncMock()
@@ -165,12 +235,16 @@ async def test_build_executor_compatible_tools(mock_agent, mock_agent_data):
             m for m in middleware if isinstance(m, ToolBindingMiddleware)
         )
 
-    keys = _tool_keys(tool_binding.private_tools)
+    keys = _tool_keys(tool_binding.all_tools)
     assert "current_time" in keys
     assert "web_search" in keys
     assert "read_webpage_cloudflare" in keys
     assert "search_web_zai" not in keys
     assert "read_webpage_zai" not in keys
+    # interactive UI system tools are always bound; the middleware drops them
+    # per request for cron triggers and sub-agent calls
+    assert "ui_show_card" in keys
+    assert "ui_ask_user" in keys
 
 
 @pytest.mark.asyncio
@@ -199,10 +273,7 @@ async def test_agent_executor_caching(mock_agent):
 
         async def side_effect(aid, agent, agent_data):
             agents[aid] = mock_executor
-            agents_updated[aid] = max(
-                agent.deployed_at if agent.deployed_at else agent.updated_at,
-                agent_data.updated_at,
-            )
+            agents_updated[aid] = max(agent.updated_at, agent_data.updated_at)
 
         mock_build_and_cache.side_effect = side_effect
 
@@ -216,22 +287,17 @@ async def test_agent_executor_caching(mock_agent):
         assert executor2 == mock_executor
         assert mock_build_and_cache.call_count == 1  # Still 1
 
-        # Update agent deployed_at to force re-init
-        mock_agent.deployed_at = datetime.now()
-        # (Assuming the logic compares timestamps. Python datetime equality is exact)
-        # We need to make sure the new timestamp is different.
-        # In the test execution, datetime.now() might be close, but let's assume it changes or we force it.
-        import time
-
-        time.sleep(0.001)
-        mock_agent.deployed_at = datetime.now()
+        # Bump agent updated_at to force re-init; sleep so the new
+        # timestamp is guaranteed to differ from the cached one.
+        await asyncio.sleep(0.001)
+        mock_agent.updated_at = datetime.now()
 
         # Third call - should re-initialize
         _executor3, _cost3 = await agent_executor(mock_agent.id)
         assert mock_build_and_cache.call_count == 2
 
         # Fourth call - update only agent_data.updated_at to force re-init
-        time.sleep(0.001)
+        await asyncio.sleep(0.001)
         mock_agent_data.updated_at = datetime.now()
 
         _executor4, _cost4 = await agent_executor(mock_agent.id)
@@ -310,6 +376,7 @@ async def test_stream_agent_flow(mock_agent):
             mock_saved_msg.user_id = "user_1"
             mock_saved_msg.message = "Hello"
             mock_saved_msg.author_type = AuthorType.WEB
+            mock_saved_msg.thread_entrypoint = AuthorType.WEB
             mock_saved_msg.attachments = []
             mock_saved_msg.team_id = None
             mock_saved_msg.app_id = None
@@ -376,6 +443,7 @@ async def test_stream_agent_rejects_unsupported_image_input(mock_agent):
     mock_saved_msg.user_id = "user_1"
     mock_saved_msg.message = "Please describe this image"
     mock_saved_msg.author_type = AuthorType.WEB
+    mock_saved_msg.thread_entrypoint = AuthorType.WEB
     mock_saved_msg.attachments = first_msg.attachments
     mock_saved_msg.team_id = None
     mock_saved_msg.app_id = None
@@ -504,10 +572,13 @@ def test_build_stream_config_metadata(mock_agent):
 
     assert stream_config.get("configurable") == {"thread_id": "agent-123-chat-456"}
     assert stream_config.get("recursion_limit") == config.recursion_limit
+    # Trace name is the human-readable agent name, not the raw agent id.
+    assert stream_config.get("run_name") == "Test Agent"
     metadata = stream_config.get("metadata")
     assert metadata is not None
     assert metadata["env"] == config.env
     assert metadata["agent_id"] == "agent-123"
+    assert metadata["agent_name"] == "Test Agent"
     assert metadata["chat_id"] == "chat-456"
     assert metadata["thread_id"] == "agent-123-chat-456"
     assert metadata["channel"] == "web"
@@ -515,21 +586,25 @@ def test_build_stream_config_metadata(mock_agent):
     assert metadata["user_id"] == "user-789"
     assert metadata["team_id"] == "team-1"
     assert metadata["app_id"] == "app-1"
-    # mock_agent has no owning team
+    assert metadata["visibility"] == "private"
+    # mock_agent has no owning team; no team names resolved here
     assert "agent_team_id" not in metadata
+    assert "agent_team_name" not in metadata
+    assert "team_name" not in metadata
+    assert "external_caller" not in metadata
 
 
 def test_build_stream_config_omits_missing_optional_fields(mock_agent):
     from intentkit.config.config import config
     from intentkit.core.engine.stream import build_stream_config
 
-    agent = mock_agent.model_copy(update={"team_id": "team-owner", "super_mode": True})
+    agent = mock_agent.model_copy(update={"team_id": "team-owner"})
     user_message = _make_user_message(user_id=None, author_type=AuthorType.TRIGGER)
     stream_config = build_stream_config(user_message, agent, None, "agent-123-chat-456")
 
-    assert stream_config.get("recursion_limit") == max(
-        config.super_recursion_limit, 1000
-    )
+    assert stream_config.get("recursion_limit") == config.recursion_limit
+    # Owning team present but no caller team => not an external call.
+    assert stream_config.get("run_name") == "Test Agent"
     metadata = stream_config.get("metadata")
     assert metadata is not None
     assert metadata["channel"] == "trigger"
@@ -537,6 +612,40 @@ def test_build_stream_config_omits_missing_optional_fields(mock_agent):
     assert "user_id" not in metadata
     assert "team_id" not in metadata
     assert "app_id" not in metadata
+    assert "external_caller" not in metadata
+
+
+def test_build_stream_config_team_names_and_external_caller(mock_agent, monkeypatch):
+    from intentkit.config.config import config
+    from intentkit.core.engine.stream import build_stream_config
+
+    monkeypatch.setattr(config, "langfuse_tracing", True)
+    agent = mock_agent.model_copy(
+        update={"team_id": "owner-team", "visibility": AgentVisibility.PUBLIC}
+    )
+    user_message = _make_user_message()
+    team_names = {"owner-team": "Acme", "caller-team": "Beta"}
+    stream_config = build_stream_config(
+        user_message, agent, "caller-team", "agent-123-chat-456", team_names
+    )
+
+    # Trace name carries the owning team; metadata distinguishes caller vs owner.
+    assert stream_config.get("run_name") == "Test Agent (Acme)"
+    metadata = stream_config.get("metadata")
+    assert metadata is not None
+    assert metadata["agent_name"] == "Test Agent"
+    assert metadata["agent_team_name"] == "Acme"
+    assert metadata["team_name"] == "Beta"
+    assert metadata["external_caller"] is True
+    assert metadata["visibility"] == "public"
+    # Langfuse tags are first-class filter chips.
+    assert metadata["langfuse_tags"] == [
+        config.env,
+        "web",
+        "public",
+        "external-caller",
+    ]
+    assert metadata["langfuse_session_id"] == "agent-123-chat-456"
 
 
 @pytest.mark.asyncio

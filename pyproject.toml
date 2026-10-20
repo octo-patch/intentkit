@@ -19,6 +19,12 @@ dependencies = [
     "starlette>=0.47.1",
     "httpx>=0.28.1",
     "httpcore>=1.0.9",
+    # The second HTTP stack: mcp 2.x, openai 3.x and anthropic 1.x run on
+    # httpx2/httpcore2.
+    # We hand mcp an httpx2 client (clients/mcp) and classify both stacks'
+    # transport errors in utils/error.py; our own code otherwise stays on httpx.
+    "httpx2>=2.5.0",
+    "httpcore2>=2.10.0",
     "aiohttp>=3.14.0",
     # Database
     "psycopg>=3.2.9",
@@ -26,26 +32,43 @@ dependencies = [
     "asyncpg>=0.30.0",
     "aiosqlite>=0.21.0",
     "sqlalchemy[asyncio]>=2.0.37",
-    "redis>=5.2.1,<8.0.0",
-    "supabase>=2.16.0",
+    # Schema migrations run automatically at startup (config/migration.py)
+    "alembic>=1.14.0",
+    # 8.x defaults socket_timeout/socket_connect_timeout to 5s and RESP3; we set
+    # both timeouts explicitly in config/redis.py so the bump changes nothing.
+    "redis>=8.0.1,<9.0.0",
     # LangChain & LLM
     "langchain>=1.3,<2",
     "langchain-community>=0.4,<1",
-    "langchain-core>=1.4,<2",
+    # 1.6 added the provider-neutral ModelError vocabulary (is_retryable),
+    # which core/executor.py and utils/error.py classify against.
+    "langchain-core>=1.6,<2",
     "langchain-openai>=1.2,<2",
     "langchain-text-splitters>=1.1,<2",
     "langchain-deepseek>=1.0,<2",
-    "langchain-google-genai>=4.2,<5",
+    # 4.3.5 is the release that adopted langchain-core 1.6's ModelError
+    # mixins (GoogleRateLimitError etc.); the Gemini path carries no HTTP
+    # status of its own, so below that the retry predicate is blind to it.
+    "langchain-google-genai>=4.3.5,<5",
     "langchain-anthropic>=1.4,<2",
-    "langchain-openrouter>=0.2.3,<1",
-    "openrouter>=0.9.0",
+    # Declared only because utils/error.py imports APITimeoutError directly
+    # (deptry DEP003). langchain-anthropic pins the effective version — keep
+    # this floor loose so it can never outrank that pin. 1.0 is where the SDK
+    # moved to httpx2, which the timeout tests build their requests with.
+    "anthropic>=1.0.0",
+    "langchain-openrouter>=0.2.5,<1",
+    # Used directly for image generation (tools/image, core/avatar) and for its
+    # typed error classes; chat and usage accounting go through
+    # langchain-openrouter. Deliberately uncapped: langchain-openrouter already
+    # caps it at <1.0.0, so lifting that cap upstream lets us follow the 1.x
+    # line without editing this line.
+    "openrouter>=0.11.46",
     "google-genai>=2.8.0",
     "langgraph>=1.2,<2",
     "langgraph-checkpoint>=4.1,<5",
     "langgraph-checkpoint-postgres>=3.1,<4",
     "langgraph-prebuilt>=1.1,<2",
     "openai>=1.59.6",
-    "langsmith>=0.8.9",
     "ormsgpack>=1.12.2",
     # Blockchain / Web3
     "cdp-sdk>=1.31.1",
@@ -55,30 +78,37 @@ dependencies = [
     "eth-typing>=6.0.0",
     "eth-utils>=2.1.0",
     "hexbytes>=1.3.1",
-    "x402>=2.0.0",
+    # 2.20 turned client spend controls on by default ($1/payment, SDK
+    # default assets only); tools/x402 disables them via set_spend_controls,
+    # which only exists from 2.20 on.
+    "x402>=2.20.0",
     # Social platforms
     "slack-sdk>=3.34.0",
-    "tweepy[async]>=4.15.0",
     # Utilities
     "cron-validator>=1.0.8,<2.0.0",
     "epyxid>=0.3.3",
     "filetype>=1.2.0,<2.0.0",
-    "jsonref>=1.1.0",
     "pillow>=11.1.0,<13.0.0",
     "pydantic>=2.10.6",
     "python-dotenv>=1.0.1",
     "pytz>=2025.1",
     "pyyaml>=6.0.2",
-    "requests>=2.32.3",
-    "requests-oauthlib>=2.0.0",
     # Scheduling (core/scheduler.py)
     "apscheduler>=3.11.0",
     # Utilities (direct imports of pydantic/web3 companions)
     "cryptography>=48.0.0",
-    "pydantic-core>=2.46.4",
-    "typing-extensions>=4.15.0",
+    # Declared only because tools/base.py imports PydanticUndefined directly
+    # (deptry DEP003). pydantic pins pydantic-core exactly, so a tight floor
+    # here silently becomes a floor on pydantic itself and can outrank an AI
+    # SDK's own pydantic ceiling — keep it as loose as the API we use allows.
+    "pydantic-core>=2.33.1",
     # MCP (Model Context Protocol)
-    "mcp>=1.0.0",
+    # 2.x carries the 2026-07-28 spec revision, but keeps the pre-revision
+    # protocols alongside it (SUPPORTED_PROTOCOL_VERSIONS still spans
+    # 2024-11-05..2026-07-28) and keeps the SSE transport. ClientSession.
+    # initialize() deliberately negotiates LATEST_HANDSHAKE_VERSION, so our
+    # clients stay on the legacy handshake and old servers keep working.
+    "mcp>=2.0.0",
     # Chinese A-share market data (cn_stock tool)
     "akshare>=1.16.0",
     "langfuse>=4.7,<5",
@@ -96,9 +126,11 @@ classifiers = [
 
 [project.optional-dependencies]
 # PDF rendering (utils/pdf.py imports these lazily; weasyprint needs system
-# pango/cairo, so it stays out of the default install)
+# pango/cairo, so it stays out of the default install). 70.0 is the release
+# that turned url_fetcher into the URLFetcher class the SSRF guard subclasses
+# (and the fix for GHSA-jf6q-chmf-3h3v).
 pdf = [
-    "weasyprint>=63.0",
+    "weasyprint>=70.0",
     "markdown>=3.7",
     "pymdown-extensions>=10.0",
 ]
@@ -122,7 +154,7 @@ app = [
     "python-multipart>=0.0.20",
     "sentry-sdk[fastapi]>=2.20.0",
     # PDF generation (the pdf extra, pinned identically)
-    "weasyprint>=63.0",
+    "weasyprint>=70.0",
     "markdown>=3.7",
     "pymdown-extensions>=10.0",
     "pyjwt>=2.13.0",
@@ -135,14 +167,11 @@ dev = [
     "pytest>=8.4.0",
     "pytest-asyncio>=1.2.0",
     "testing.postgresql",
-    # Linting and code quality
-    "ruff>=0.11.9",
+    # Linting and code quality (lint config inherits ruff 0.16's default rule set)
+    "ruff>=0.16.0",
     "deptry>=0.23.0",
-    # Database migrations
-    "alembic>=1.14.0",
     # Local LLM testing
     "langchain-ollama>=1.1,<2",
-    "jsonschema>=4.26.0",
     "basedpyright>=1.39.7",
     "import-linter>=2.11",
 ]
@@ -158,8 +187,9 @@ override-dependencies = ["bcl>=3.0.0"]
 
 
 [tool.basedpyright]
-# scripts/ holds one-off ops/migration scripts with loose typing; not worth checking
-exclude = ["scripts", "**/node_modules", "**/__pycache__", "**/.*", "dist", "build"]
+# scripts/ holds one-off ops/migration scripts with loose typing; the
+# autogenerated migration revisions are in the same category; not worth checking
+exclude = ["scripts", "intentkit/migrations/versions", "**/node_modules", "**/__pycache__", "**/.*", "dist", "build"]
 reportAny = false
 reportExplicitAny = false
 reportMissingTypeStubs = false
@@ -198,8 +228,56 @@ include = [
     "pyproject.toml",
 ]
 
+[tool.ruff.format]
+# Ruff 0.16 formats Python code blocks inside Markdown by default. Our docs use
+# illustrative fragments (bare kwargs, partial function bodies), which the
+# formatter rewrites into misleading full-module style — so keep .md as authored.
+exclude = ["*.md"]
+
 [tool.ruff.lint]
-extend-select = ["I"]
+# Ruff 0.16 replaced the old E4/E7/E9/F default with a curated 413-rule set
+# (partial-prefix subsets across ~35 groups). We inherit that default instead of
+# pinning: new defaults from future ruff versions are adopted on upgrade, and
+# anything we can't pass goes into `ignore` below with a reason.
+extend-select = [
+    # The pre-0.16 pycodestyle baseline, no longer part of ruff's defaults.
+    "E4", "E7", "E9",
+    # Full isort (defaults only carry I001).
+    "I",
+    # Blocking subprocess/os calls in async defs; adopted pre-0.16 but not in
+    # the curated default set.
+    "ASYNC240", "ASYNC250",
+]
+ignore = [
+    # Broad `except Exception` is deliberate resilience in a tool-execution
+    # platform: agent/tool failures must degrade, never crash the run loop.
+    "BLE001",
+    # The whole repo (credit system, pricing, tools, tests — 300+ sites)
+    # uniformly uses the str constructor for Decimal (`Decimal("100")` and
+    # `Decimal("0.0001")` alike). FURB157 would rewrite only the int-valued
+    # ones, splitting the style in financial code.
+    "FURB157",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's parameter markers are designed to be called in defaults.
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Path",
+    "fastapi.Query",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# One-off ops/migration scripts run interactively from a shell; blocking I/O,
+# prompts on the event loop, and naive local timestamps are fine there
+# (scripts/ is likewise out of scope for deptry and basedpyright).
+"scripts/*" = ["ASYNC", "LOG015", "DTZ"]
+# Nested `with patch(...)` stacks mirror decorator stacking and read better
+# than one parenthesized mega-with; naive datetimes are fine for fixture data;
+# silently swallowed exceptions in best-effort test cleanup are fine too.
+"tests/*" = ["SIM117", "DTZ", "S110", "S112"]
 
 [tool.ruff.lint.isort]
 force-single-line = false

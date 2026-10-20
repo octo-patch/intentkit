@@ -75,11 +75,7 @@ def mock_agent():
     agent.id = "test-agent-123"
     agent.name = "Test Agent"
     agent.description = "A helpful test agent"
-    agent.purpose = "Testing avatar generation"
-    agent.personality = "Friendly and precise"
-    agent.principles = "Always be accurate"
-    agent.prompt = "You are a test agent."
-    agent.prompt_append = None
+    agent.system_prompt = "## Purpose\n\nTesting avatar generation."
     agent.extra_prompt = None
     return agent
 
@@ -90,35 +86,25 @@ class TestBuildAgentProfile:
         assert "### Name" in profile
         assert "Test Agent" in profile
         assert "### Description" in profile
-        assert "### Purpose" in profile
-        assert "### Personality" in profile
-        assert "### Principles" in profile
         assert "### System Prompt" in profile
+        assert "Testing avatar generation" in profile
 
     def test_skips_none_fields(self, mock_agent):
-        mock_agent.purpose = None
-        mock_agent.personality = None
-        mock_agent.principles = None
-        mock_agent.prompt = None
+        mock_agent.system_prompt = None
         profile = build_agent_profile("test-agent-123", mock_agent)
-        assert "### Purpose" not in profile
-        assert "### Personality" not in profile
+        assert "### System Prompt" not in profile
         assert "### Name" in profile
 
     def test_skips_empty_string_fields(self, mock_agent):
-        mock_agent.purpose = "   "
+        mock_agent.system_prompt = "   "
         profile = build_agent_profile("test-agent-123", mock_agent)
-        assert "### Purpose" not in profile
+        assert "### System Prompt" not in profile
 
     def test_fallback_to_agent_id(self):
         agent = MagicMock()
         agent.name = None
         agent.description = None
-        agent.purpose = None
-        agent.personality = None
-        agent.principles = None
-        agent.prompt = None
-        agent.prompt_append = None
+        agent.system_prompt = None
         agent.extra_prompt = None
         profile = build_agent_profile("fallback-id", agent)
         assert "fallback-id" in profile
@@ -374,10 +360,10 @@ class TestProviderFunctions:
         *,
         send_side_effect: BaseException | None = None,
     ) -> tuple[Any, AsyncMock]:
-        """Patch ``openrouter.OpenRouter`` as seen by intentkit.core.avatar.
+        """Patch the shared client factory as seen by intentkit.core.avatar.
 
         Returns ``(patch_ctx, mock_send)``. The mock client returned by the
-        patched constructor has ``.chat.send_async`` set to ``mock_send``.
+        patched factory has ``.chat.send_async`` set to ``mock_send``.
         """
         mock_send = AsyncMock()
         if send_side_effect is not None:
@@ -390,7 +376,7 @@ class TestProviderFunctions:
         mock_client = MagicMock(chat=mock_chat)
 
         patch_ctx = patch(
-            "intentkit.core.avatar.openrouter.OpenRouter", return_value=mock_client
+            "intentkit.core.avatar.get_openrouter_client", return_value=mock_client
         )
         return patch_ctx, mock_send
 

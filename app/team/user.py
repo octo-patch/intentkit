@@ -3,7 +3,7 @@
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from fastapi import APIRouter, Body, Depends, File, Response, UploadFile
@@ -134,9 +134,8 @@ async def _sync_supabase_user(user_id: str) -> User:
 
     # Sync avatar: from Google avatar_url if user has no avatar yet
     google_avatar = user_metadata.get("avatar_url")
-    if google_avatar and has_google:
-        if not (existing_user and existing_user.avatar):
-            update_fields["avatar"] = google_avatar
+    if google_avatar and has_google and not (existing_user and existing_user.avatar):
+        update_fields["avatar"] = google_avatar
 
     update_fields["synced_at"] = datetime.now(UTC)
 
@@ -149,7 +148,9 @@ async def _get_user_with_cache(user_id: str) -> tuple[str, bool]:
     cache_key = f"{USER_CACHE_PREFIX}{user_id}"
 
     try:
-        cached = await redis.get(cache_key)
+        # decode_responses=True, so values come back as str; redis-py 8's
+        # overloads widen this to `bytes | str` because they cannot see the flag.
+        cached = cast(str | None, await redis.get(cache_key))
         if cached:
             return (cached, True)
     except Exception as e:

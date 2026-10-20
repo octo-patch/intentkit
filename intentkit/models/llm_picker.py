@@ -10,9 +10,10 @@ in ``llm.yaml``.
 from intentkit.config.config import config
 from intentkit.models.llm import AVAILABLE_MODELS, LLMProvider
 
-# Universal last-resort model id. Also used as the SQLAlchemy column default for
-# TemplateTable, so it must be a plausible model even when nothing is configured.
-_DEFAULT_FALLBACK_MODEL = "gpt-5.4-mini"
+# Universal last-resort model id. Also backstops pick_default_model (the
+# TemplateTable column default), so it must be a plausible model even when
+# nothing is configured.
+_DEFAULT_FALLBACK_MODEL = "gpt-luna"
 
 
 def _first_configured(
@@ -62,13 +63,13 @@ def _first_configured(
 def pick_summarize_model() -> str:
     """Pick the best available summarize model based on configured API keys."""
     order: list[tuple[str, LLMProvider]] = [
-        ("gemini-3.1-flash-lite-preview", LLMProvider.GOOGLE),
-        ("deepseek/deepseek-v4-flash", LLMProvider.OPENROUTER),
-        ("gpt-5.4-mini", LLMProvider.OPENAI),
-        ("grok-4.20-non-reasoning", LLMProvider.XAI),
-        ("deepseek-v4-flash", LLMProvider.DEEPSEEK),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5", LLMProvider.MIMO_PLAN),
+        ("gemini-flash-lite", LLMProvider.GOOGLE),
+        ("deepseek/deepseek-flash", LLMProvider.OPENROUTER),
+        ("gpt-luna", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("deepseek-flash", LLMProvider.DEEPSEEK),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order, lite_compatible=True)
 
@@ -80,13 +81,13 @@ def pick_default_model() -> str:
     crash — it falls back to a reasonable model when nothing is configured.
     """
     order: list[tuple[str, LLMProvider]] = [
-        ("gemini-3-flash-preview", LLMProvider.GOOGLE),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("minimax/minimax-m3", LLMProvider.OPENROUTER),
-        ("gpt-5.4-mini", LLMProvider.OPENAI),
-        ("grok-4.20-non-reasoning", LLMProvider.XAI),
-        ("deepseek-v4-flash", LLMProvider.DEEPSEEK),
-        ("mimo-v2.5", LLMProvider.MIMO_PLAN),
+        ("gemini-flash", LLMProvider.GOOGLE),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("minimax/minimax-flash:free", LLMProvider.OPENROUTER),
+        ("gpt-luna", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("deepseek-flash", LLMProvider.DEEPSEEK),
+        ("mimo", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
 
@@ -94,17 +95,18 @@ def pick_default_model() -> str:
 def pick_lead_model() -> str:
     """Pick the model for the team lead orchestrator.
 
-    The lead drives user conversation and multi-agent delegation, so it runs a
-    stronger flash model than the per-agent default (``pick_default_model``).
+    The lead drives user conversation and multi-agent delegation. DeepSeek's
+    V4.1 Flash tops agent/tool-driving benchmarks at flash cost (DeepSeek
+    states it surpasses V4 Pro), so it heads the list on both its providers.
     """
     order: list[tuple[str, LLMProvider]] = [
-        ("gemini-3.5-flash", LLMProvider.GOOGLE),
-        ("google/gemini-3.5-flash", LLMProvider.OPENROUTER),
-        ("gpt-5.4-mini", LLMProvider.OPENAI),
-        ("grok-4.20-non-reasoning", LLMProvider.XAI),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("deepseek-v4-flash", LLMProvider.DEEPSEEK),
-        ("mimo-v2.5", LLMProvider.MIMO_PLAN),
+        ("deepseek-flash", LLMProvider.DEEPSEEK),
+        ("deepseek/deepseek-flash", LLMProvider.OPENROUTER),
+        ("gemini-flash", LLMProvider.GOOGLE),
+        ("gpt-luna", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
 
@@ -112,13 +114,14 @@ def pick_lead_model() -> str:
 def pick_lite_model() -> str:
     """Pick the cheapest/fastest "lite" model — good enough for simple tasks."""
     order: list[tuple[str, LLMProvider]] = [
-        ("gemini-3.1-flash-lite-preview", LLMProvider.GOOGLE),
-        ("gpt-5.4-nano", LLMProvider.OPENAI),
-        ("z-ai/glm-4.7-flash", LLMProvider.OPENROUTER),
-        ("deepseek-v4-flash", LLMProvider.DEEPSEEK),
-        ("grok-4.20-non-reasoning", LLMProvider.XAI),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5", LLMProvider.MIMO_PLAN),
+        ("gemini-flash-lite", LLMProvider.GOOGLE),
+        ("z-ai/glm-flash", LLMProvider.OPENROUTER),
+        ("deepseek-flash", LLMProvider.DEEPSEEK),
+        # Luna is OpenAI's cheapest tier; glm/deepseek above are still cheaper.
+        ("gpt-luna", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(
         order, lite_compatible=True, fallback=_DEFAULT_FALLBACK_MODEL
@@ -128,13 +131,13 @@ def pick_lite_model() -> str:
 def pick_smartest_model() -> str:
     """Pick the highest-intelligence model for complex reasoning."""
     order: list[tuple[str, LLMProvider]] = [
-        ("anthropic/claude-opus-4.8", LLMProvider.OPENROUTER),
-        ("gemini-3.1-pro-preview-customtools", LLMProvider.GOOGLE),
-        ("gpt-5.4", LLMProvider.OPENAI),
-        ("grok-4.3", LLMProvider.XAI),
-        ("deepseek-v4-pro", LLMProvider.DEEPSEEK),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5-pro", LLMProvider.MIMO_PLAN),
+        ("anthropic/claude-opus", LLMProvider.OPENROUTER),
+        ("gemini-pro", LLMProvider.GOOGLE),
+        ("gpt-sol", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("deepseek-pro", LLMProvider.DEEPSEEK),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo-pro", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
 
@@ -142,13 +145,13 @@ def pick_smartest_model() -> str:
 def pick_fastest_model() -> str:
     """Pick the lowest-latency model for snappy, simple interactions."""
     order: list[tuple[str, LLMProvider]] = [
-        ("gemini-3-flash-preview", LLMProvider.GOOGLE),
-        ("gpt-5.4-nano", LLMProvider.OPENAI),
-        ("qwen/qwen3.6-flash", LLMProvider.OPENROUTER),
-        ("grok-4.20-non-reasoning", LLMProvider.XAI),
-        ("deepseek-v4-flash", LLMProvider.DEEPSEEK),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5", LLMProvider.MIMO_PLAN),
+        ("gemini-flash-lite", LLMProvider.GOOGLE),
+        ("qwen/qwen-flash", LLMProvider.OPENROUTER),
+        ("gpt-luna", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("deepseek-flash", LLMProvider.DEEPSEEK),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(
         order, lite_compatible=True, fallback=_DEFAULT_FALLBACK_MODEL
@@ -158,12 +161,13 @@ def pick_fastest_model() -> str:
 def pick_multimodal_model() -> str:
     """Pick the best model that accepts image/audio/video input."""
     order: list[tuple[str, LLMProvider]] = [
-        ("gemini-3.5-flash", LLMProvider.GOOGLE),
-        ("google/gemini-3.5-flash", LLMProvider.OPENROUTER),
-        ("mimo-v2.5", LLMProvider.MIMO_PLAN),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("gpt-5.4", LLMProvider.OPENAI),
-        ("grok-4.3", LLMProvider.XAI),
+        ("gemini-flash", LLMProvider.GOOGLE),
+        ("google/gemini-flash", LLMProvider.OPENROUTER),
+        ("mimo", LLMProvider.MIMO_PLAN),
+        ("minimax", LLMProvider.MINIMAX),
+        ("gpt-terra", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("deepseek-flash", LLMProvider.DEEPSEEK),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
 
@@ -171,13 +175,13 @@ def pick_multimodal_model() -> str:
 def pick_writing_model() -> str:
     """Pick the best model for high-quality general (English) writing."""
     order: list[tuple[str, LLMProvider]] = [
-        ("anthropic/claude-sonnet-4.6", LLMProvider.OPENROUTER),
-        ("gemini-3.1-pro-preview-customtools", LLMProvider.GOOGLE),
-        ("gpt-5.4", LLMProvider.OPENAI),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("deepseek-v4-pro", LLMProvider.DEEPSEEK),
-        ("grok-4.3", LLMProvider.XAI),
-        ("mimo-v2.5-pro", LLMProvider.MIMO_PLAN),
+        ("anthropic/claude-sonnet", LLMProvider.OPENROUTER),
+        ("gemini-pro", LLMProvider.GOOGLE),
+        ("gpt-sol", LLMProvider.OPENAI),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("deepseek-pro", LLMProvider.DEEPSEEK),
+        ("grok", LLMProvider.XAI),
+        ("mimo-pro", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
 
@@ -185,13 +189,13 @@ def pick_writing_model() -> str:
 def pick_chinese_writing_model() -> str:
     """Pick the best model for Chinese writing (Chinese-native models first)."""
     order: list[tuple[str, LLMProvider]] = [
-        ("qwen/qwen3.7-max", LLMProvider.OPENROUTER),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5-pro", LLMProvider.MIMO_PLAN),
-        ("deepseek-v4-pro", LLMProvider.DEEPSEEK),
-        ("gemini-3.1-pro-preview-customtools", LLMProvider.GOOGLE),
-        ("gpt-5.4", LLMProvider.OPENAI),
-        ("grok-4.3", LLMProvider.XAI),
+        ("qwen/qwen-max", LLMProvider.OPENROUTER),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo-pro", LLMProvider.MIMO_PLAN),
+        ("deepseek-pro", LLMProvider.DEEPSEEK),
+        ("gemini-pro", LLMProvider.GOOGLE),
+        ("gpt-sol", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
 
@@ -199,13 +203,13 @@ def pick_chinese_writing_model() -> str:
 def pick_finance_model() -> str:
     """Pick the best model for financial/quantitative analysis."""
     order: list[tuple[str, LLMProvider]] = [
-        ("anthropic/claude-opus-4.8", LLMProvider.OPENROUTER),
-        ("deepseek-v4-pro", LLMProvider.DEEPSEEK),
-        ("gemini-3.1-pro-preview-customtools", LLMProvider.GOOGLE),
-        ("gpt-5.4", LLMProvider.OPENAI),
-        ("grok-4.3", LLMProvider.XAI),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5-pro", LLMProvider.MIMO_PLAN),
+        ("anthropic/claude-opus", LLMProvider.OPENROUTER),
+        ("deepseek-pro", LLMProvider.DEEPSEEK),
+        ("gemini-pro", LLMProvider.GOOGLE),
+        ("gpt-sol", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo-pro", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
 
@@ -213,13 +217,13 @@ def pick_finance_model() -> str:
 def pick_search_model() -> str:
     """Pick the best model for web/realtime search (native-search providers first)."""
     order: list[tuple[str, LLMProvider]] = [
-        ("grok-4.3", LLMProvider.XAI),
-        ("gemini-3-flash-preview", LLMProvider.GOOGLE),
-        ("gpt-5.4", LLMProvider.OPENAI),
-        ("x-ai/grok-4.3", LLMProvider.OPENROUTER),
-        ("deepseek-v4-flash", LLMProvider.DEEPSEEK),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5", LLMProvider.MIMO_PLAN),
+        ("grok", LLMProvider.XAI),
+        ("gemini-flash", LLMProvider.GOOGLE),
+        ("gpt-terra", LLMProvider.OPENAI),
+        ("x-ai/grok", LLMProvider.OPENROUTER),
+        ("deepseek-flash", LLMProvider.DEEPSEEK),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
 
@@ -227,39 +231,15 @@ def pick_search_model() -> str:
 def pick_broadest_knowledge_model() -> str:
     """Pick the model with the broadest world knowledge."""
     order: list[tuple[str, LLMProvider]] = [
-        ("anthropic/claude-opus-4.8", LLMProvider.OPENROUTER),
-        ("gemini-3.1-pro-preview-customtools", LLMProvider.GOOGLE),
-        ("gpt-5.4", LLMProvider.OPENAI),
-        ("grok-4.3", LLMProvider.XAI),
-        ("deepseek-v4-pro", LLMProvider.DEEPSEEK),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5-pro", LLMProvider.MIMO_PLAN),
+        ("anthropic/claude-opus", LLMProvider.OPENROUTER),
+        ("gemini-pro", LLMProvider.GOOGLE),
+        ("gpt-sol", LLMProvider.OPENAI),
+        ("grok", LLMProvider.XAI),
+        ("deepseek-pro", LLMProvider.DEEPSEEK),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo-pro", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order, fallback=_DEFAULT_FALLBACK_MODEL)
-
-
-def pick_tool_selector_model() -> str | None:
-    """
-    Pick the best available model for LLM-based tool selection.
-
-    Returns None when no suitable model is available, so the caller can
-    skip the tool-selector middleware gracefully.
-
-    Tool selection uses `response_format: json_schema` structured output.
-    Only OpenAI models are known to handle the LangChain
-    LLMToolSelectorMiddleware schema reliably (see langchain-ai/langchain
-    #33651, #24225 for Gemini/GLM incompatibilities).
-    """
-    order: list[tuple[str, LLMProvider]] = [
-        ("gpt-5.4-nano", LLMProvider.OPENAI),
-        ("openai/gpt-5.4-nano", LLMProvider.OPENROUTER),
-    ]
-
-    for model_id, provider in order:
-        if provider.is_configured:
-            return model_id
-
-    return None
 
 
 def pick_long_context_model() -> str:
@@ -269,13 +249,12 @@ def pick_long_context_model() -> str:
     """
     # Priority order based on cost (cheapest first), one per provider:
     order: list[tuple[str, LLMProvider]] = [
-        ("gemini-3.1-flash-lite-preview", LLMProvider.GOOGLE),
-        ("grok-4.20-non-reasoning", LLMProvider.XAI),
-        ("deepseek/deepseek-v4-flash", LLMProvider.OPENROUTER),
-        ("gpt-5.4-nano", LLMProvider.OPENAI),
-        ("deepseek-v4-flash", LLMProvider.DEEPSEEK),
-        ("MiniMax-M3", LLMProvider.MINIMAX),
-        ("mimo-v2.5", LLMProvider.MIMO_PLAN),
+        ("gemini-flash-lite", LLMProvider.GOOGLE),
+        ("deepseek/deepseek-flash", LLMProvider.OPENROUTER),
+        ("deepseek-flash", LLMProvider.DEEPSEEK),
+        ("gpt-luna", LLMProvider.OPENAI),
+        ("minimax-flash", LLMProvider.MINIMAX),
+        ("mimo", LLMProvider.MIMO_PLAN),
     ]
     return _first_configured(order)
 
@@ -286,4 +265,4 @@ def list_available_model_ids() -> list[str]:
     Reflects the providers configured at process start (``AVAILABLE_MODELS``),
     which is fixed for the lifetime of a deployment.
     """
-    return sorted({model.id for model in AVAILABLE_MODELS.values()})
+    return sorted({model.id for model in AVAILABLE_MODELS.values() if model.selectable})

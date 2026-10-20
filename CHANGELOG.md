@@ -1,3 +1,631 @@
+# Release v2.42.0
+
+## Model Catalog
+
+- **Model ids no longer carry a version.** An agent now picks "Gemini Flash", "GPT Luna" or "Grok" as a series, and the catalog decides which release serves it. When a provider ships a new version, agents move over automatically and nothing in their configuration changes. Agents created before this release are recognised by their old ids and show the current entry in the model picker; no migration is needed.
+- **OpenRouter follows the latest release by itself.** For the vendors OpenRouter offers a "latest" alias for (Anthropic, OpenAI, Gemini Flash, DeepSeek, xAI, Z.ai, Moonshot), the catalog now points at that alias, so new versions arrive as soon as OpenRouter switches them on.
+- **Gemini 3.8 Flash** replaces 3.7 Flash on both Google and OpenRouter, at the same price and with the same thinking controls. Web search grounding uses it too.
+- **Muse Spark 1.3 (Contributor)** from Meta is available through OpenRouter: a 1M-context multimodal reasoning model at a very low price. Meta may use requests to improve its models and limits the tier to 100 requests per minute, and the OpenRouter account must have its 18+ confirmation enabled before it can be used.
+- **Qwen3.8 Max** moves to Alibaba's September snapshot, which improves coding, agent workflows and image understanding at the same price.
+- Prices were re-checked against every pinned endpoint. OpenRouter's discount on GPT-5.6 Terra and Luna has ended and moved to GPT-5.6 Sol, OpenAI has lowered Sol's own price, and GLM 5.3 Flash's launch discount has ended.
+- DeepSeek has withdrawn the planned retirement of V4 Pro; it stays available at the same price.
+
+## Security & Maintenance
+
+- PDF rendering now uses the latest rendering engine, which fixes a security advisory and makes blocked internal-network fetches visible in the logs.
+- Updated the Anthropic, OpenAI, web3 and other Python dependencies, the frontend framework (closing two critical advisories) and all Go modules.
+
+# Release v2.41.0
+
+## Model Updates
+
+- **DeepSeek V4.1 Flash** replaces DeepSeek V4 Flash on both DeepSeek's own API and OpenRouter. DeepSeek reports it beats V4 Pro on quality, speed and cost, and it is the first DeepSeek build with native image input rather than the experimental vision add-on. The 1M-token context window and 384K output limit stay the same. It is also cheaper: about a third less per input token, and cached input drops by more than half. Agents on DeepSeek V4 Flash move over automatically.
+- DeepSeek has announced that V4 Pro will be retired on September 14 and served by V4.1 Flash until a V4.1 Pro ships; the V4 Pro entries stay in the catalog for now.
+
+# Release v2.40.0
+
+## Long-Term Memory, Rebuilt
+
+Agents now keep memory as individual facts filed under a fixed set of topics, instead of one free-form note per scope that was rewritten on every update.
+
+- **Facts, not notes.** Each thing an agent learns is recorded as one entry: the fact itself, why it believes it, and whether a person stated it or the agent worked it out. Entries are never edited or deleted — a correction is a newer entry — so nothing an agent was told can be silently lost in a rewrite.
+- **What people say outranks what the agent finds.** Every topic's summary is rebuilt from its entries after each write. A person's instruction always wins over the agent's own conclusion, whatever the dates; a later statement replaces an earlier one; and a real contradiction between the two becomes a question the agent will raise rather than a silent pick.
+- **Findings age, instructions don't.** Something the agent noticed by itself expires after a topic-specific period and is retired by a daily sweep; something a person said is kept until they say otherwise.
+- **A closed list of topics per scope.** Team memory covers the team's profile, the subject of the work, people and roles, working agreements, output conventions, resources, vocabulary and hard rules. Channel memory covers a chat's purpose, subject, participation rules and conventions. User memory covers preferences, role and personal resources. Scheduled-task memory covers setup, cursors, what is already covered, baselines, open threads and method notes. A fact that fits no topic is not recorded.
+- **The Memory page is now read-only** and shows each agent's memory by topic. To change what an agent remembers, tell it in a conversation.
+
+**Upgrading:** existing memory notes are kept as they are but are no longer read by agents. After deploying, run `scripts/import_legacy_memories.py --apply` once to split them into the new entries.
+
+## Improvements
+
+- The team lead now records its own memory the same way every agent does; the self-updater assistant only edits its name, avatar and personality.
+- Fixed bugs and improved robustness in the memory module.
+
+# Release v2.39.0
+
+## Model Updates
+
+- **GLM 5.3 Flash** — Z.ai's new flash model replaces GLM 4.7 Flash. It is a major step up: a 1M-token context window (5x larger), it can now read images and video, and it reasons on every request. It launches at half price, so it currently costs only slightly more than the model it replaces. Agents on GLM 4.7 Flash move over automatically.
+- **Qwen3.8 Flash** — Alibaba's newest flash model replaces Qwen3.7 Flash, with better quality across the board and double the maximum output length. Agents on the previous version move over automatically.
+- **Ox Alpha has been retired.** The free preview period for this anonymous stealth model has ended and its provider has withdrawn it. By all the evidence it was GLM 5.3 Flash in disguise, so the same model remains available above under its real name. The few agents created with Ox Alpha as their model during the one-week trial need to be pointed at another model; new agents default to Gemini 3.7 Flash again.
+
+## Improvements
+
+- Strengthened the safeguards on the model catalog so that models routed through OpenRouter are always served by their vetted upstream provider.
+
+# Release v2.38.0
+
+## Video Generation
+
+The video toolset is now three models instead of six, and every one of them runs through OpenRouter:
+
+- **Seedance 2.0 Mini** — the fast, inexpensive option, for drafts and quick iteration.
+- **Seedance 2.5** — best for long-form storytelling and generating from a reference image.
+- **MiniMax H3** — omni-modal generation with native audio, up to 2K.
+
+**Sora, Sora Pro, Veo, Veo Fast and Grok video have been retired.** Agents that had any of these enabled will simply no longer show them; nothing else in the agent's setup changes, and MiniMax Hailuo keeps working under its existing entry, now on the newer H3 model. OpenAI is shutting its video API down entirely in September with no replacement, so Sora would have stopped working regardless.
+
+**Video is now billed on what it actually costs.** Previously each video tool charged a fixed price per call, which meant short clips subsidised long ones. Charges now follow the real cost of the generation — model, resolution and length — so a quick draft costs a fraction of a long high-resolution render.
+
+All three models are also available for image-to-video: supply a starting image and the model animates from it.
+
+## Improvements
+
+- Refreshed the platform's upstream dependencies, picking up upstream fixes across the model and payment integrations.
+- Improved how failures from model providers are recognised, so temporary provider problems are retried and permanent ones surface promptly instead of being retried in vain.
+- Fixed an issue where a starting image supplied in a format other than PNG could be misread by the provider.
+- Fixed bugs in the video generation and agent payment modules.
+
+# Release v2.37.0
+
+## Model Updates
+
+- **DeepSeek V4 Flash now understands images.** DeepSeek's multimodal build of V4 Flash replaces the text-only one, at the same speed and text quality, so the platform's cheapest workhorse model can now read charts, screenshots and documents. Agents on the previous version move over automatically — no action needed. It is an experimental build from DeepSeek, so image handling may change without notice.
+
+## Improvements
+
+- Corrected the billing rates recorded for the DeepSeek models, which sat below what DeepSeek actually charges.
+
+# Release v2.36.0
+
+## Model Updates
+
+- **Gemini 3.7 Flash** — Google's newest Flash replaces Gemini 3.6 Flash, both on Google directly and through OpenRouter. It is faster on agent workflows and multi-step reasoning, and Google has halved Flash pricing through the end of 2026, so it now costs half of what 3.6 did.
+- **Cheaper Gemini through OpenRouter** — Gemini requests routed through OpenRouter now go to Google's Vertex endpoint, which is currently discounted a further 50% below the AI Studio endpoint. Gemini 3.7 Flash on OpenRouter is a quarter of 3.6's launch price.
+- **GLM 5.3** — Z.ai's upgrade replaces GLM 5.2 at the same price, with a large step up on coding and long-running agent tasks.
+
+Agents still set to Gemini 3.6 Flash or GLM 5.2 are moved to the new models automatically — no action needed. The built-in web search's Gemini fallback also moves to 3.7 Flash.
+
+# Release v2.35.0
+
+## Model Updates
+
+- **Ox Alpha (Free)** — a new preview model from OpenRouter is now available to every team, free of charge while the preview lasts. It is a reasoning model built for coding and long-running agent work, understands images and video as well as text, and handles a million tokens of context. Note that as a preview offering it runs slower than the production models in the catalog, and the provider retains prompts and completions (they are not used for training).
+- **Ox Alpha is the default model for new agents** during this trial period. Existing agents keep whatever model they were configured with; the model picker still lists every other option.
+
+# Release v2.34.1
+
+## Improvements
+
+- Routine dependency maintenance across the whole platform: the AI provider SDKs, web framework, database drivers, management frontend, and messaging integrations were all brought up to their latest releases.
+
+## Bug Fixes
+
+- Fixed bugs in the agent engine's error handling that surfaced with the latest OpenAI SDK update: brief network interruptions are reliably retried again, and requests that run out of time are now reported as timeouts instead of a generic internal error.
+
+# Release v2.34.0
+
+## Model Updates
+
+- **Grok 4.6** — xAI's newest flagship replaces Grok 4.5, with stronger coding and knowledge performance and a new extra-deep reasoning level for the hardest problems. Available both via xAI directly and through OpenRouter.
+- **Qwen3.8 Max** — Alibaba's new flagship replaces Qwen3.7 Max and can now understand images and video, not just text.
+- **DeepSeek V4 Pro** — upgraded to the official general-availability build on OpenRouter.
+
+Agents still set to the previous model versions are moved to the new ones automatically — no action needed.
+
+# Release v2.33.0
+
+## Security
+
+- **Closed a server-side request forgery hole reported privately by an outside security researcher.** The website scraping tools fetched any address an agent conversation named, without checking where it pointed. That let the platform be steered at its own internal network or at a cloud provider's metadata service, and because the scraper indexes what it retrieves, the response could then be read back out of the agent's knowledge base.
+
+- **Every tool that fetches an address is now protected by one shared check, not several.** The platform previously carried three separate versions of this protection, each covering slightly different ground, and several fetching paths had none at all. All of them now share a single check that classifies the destination before the request, again after the address is resolved, and once more for every hop when a site forwards the request elsewhere. Anything aimed at an internal, reserved, or metadata address is refused before a connection is opened.
+
+- **The shared check also covers routes the previous versions missed**, including addresses that resolve to an internal destination only at request time, IPv6 wrappers around internal addresses, and the metadata endpoints of additional cloud providers. Fetching tools that had no protection at all — image editing and upscaling, image inputs to the image generators, paid HTTP requests, link previews, and stored-image downloads — are now covered on the same terms.
+
+## Improvements
+
+- Web page reading is cheaper and more reliable: plain-text and data endpoints are fetched directly instead of going through the browser-rendering service, rendering calls are paced to stay inside the service's rate limit, and rate-limit responses are retried automatically.
+- Publishing a post no longer fails when extra or blank tags are supplied; the extras are dropped instead of wasting the agent's turn.
+- Internal helper tasks such as page cleanup, memory merging, and search result formatting no longer spend reasoning effort on mechanical work, cutting a substantial amount of weekly token usage with no change in output quality.
+
+# Release v2.32.3
+
+## Improvements
+
+- Routine dependency maintenance across the platform: the backend libraries and the management console's web framework, UI libraries, and development tooling were updated to their latest patch releases for security and stability. No user-facing changes.
+
+# Release v2.32.2
+
+## Bug Fixes
+
+- Agent activity and post feeds now load correctly when the page address uses the agent's custom URL name. Previously, reloading an agent's activities or posts page could show an empty list even though the agent had content, and opening a single post from such an address could fail with a "not found" error.
+- Requesting content for an agent that doesn't exist now returns a clear "not found" error instead of a silently empty list.
+
+## Improvements
+
+- Every agent management endpoint in the local API now accepts the agent's custom URL name interchangeably with its ID, so all pages behave consistently after the address bar switches to the friendly URL.
+- Consolidated the internal agent lookup logic into a single shared helper, reducing the chance of this class of bug recurring in future endpoints.
+
+# Release v2.32.1
+
+## Security
+
+- Updated a low-level text-pattern dependency in the web app to close a recently disclosed denial-of-service weakness that could crash the build tooling on malicious input. No user-facing changes.
+
+# Release v2.32.0
+
+## Model Catalog Refresh
+
+- **GPT-5.6 price cuts passed through.** OpenAI reduced Terra by 20% and Luna by 80%; on OpenRouter both tiers currently run at half of OpenAI's list price, and the catalog now reflects each channel's real rate. Cached input stays at 10% of the input price everywhere.
+- **DeepSeek V4 Flash official build.** Agents on DeepSeek V4 Flash now get the official release build, which posts large gains on agent and coding benchmarks. Existing agents move over automatically — no changes needed. Its maximum response length also grew twelvefold.
+- **Qwen Flash upgraded to 3.7.** The new generation understands images and video, costs roughly a tenth of the previous flash on input, and existing agents are migrated automatically.
+- **Across-the-board price corrections.** Every OpenRouter model's price is now sourced from the first-party endpoint we actually route to, rather than marketplace-wide averages. Several models became cheaper (Qwen Max, MiniMax M3, both MiMo tiers, Grok cache reads), one had been undercharged and was corrected (GLM 5.2), and DeepSeek cache-hit pricing is now consistent across channels.
+- Fixed a routing configuration that could prevent Kimi K3 requests from reaching Moonshot's servers.
+
+## Team Lead
+
+- The built-in team lead orchestrator now runs on DeepSeek's new V4 Flash build, which leads agent-orchestration benchmarks while costing a fraction of the previous default model.
+
+## Platform
+
+- Connections to remote MCP tool servers were upgraded to the latest protocol SDK, and the service now properly identifies itself to those servers.
+- On startup, the service now waits for its database, cache, and storage to be reachable before accepting work, making deploys and restarts more predictable.
+- Routine AI SDK upgrades across the model integrations.
+
+# Release v2.31.2
+
+## Bug Fixes
+
+- Editing an agent that has a custom URL name now saves correctly. Previously, if you opened an agent's edit page, made a change, and reloaded the page before saving, the save could fail with an "agent not found" error.
+
+## Improvements
+
+- Codebase-wide quality pass: the project's automated code checks were expanded from a small hand-picked set to the linter's full recommended set, and roughly 1,600 findings were resolved across the codebase. Most were stylistic, but the sweep also corrected a few real issues, including timestamps recorded without a timezone in the autonomous task scheduler and the DeFi Llama market-data client, and error logs that repeated the same error text twice. Failure-case tests were tightened to verify the specific error they expect instead of accepting any failure.
+- Removed an unused third-party dependency, slightly reducing install size.
+
+# Release v2.31.1
+
+## Improvements
+
+- Clearer diagnostics for model provider failures: when a model provider rejects or fails a request, error logs and alerts now include the provider's status code and response details, instead of only a generic message like "Provider returned error". This applies to agent runs and to background history summarization, and makes it possible to tell at a glance whether a failure was a provider outage or a rejected request.
+
+# Release v2.31.0
+
+## Agent Form Rebuilt
+
+The agent creation and editing form has been rebuilt. It used to be generated from a schema the backend served; it is now written directly in the web app. That removes a layer of indirection that made every form change a two-sided edit, and it lets the create page render immediately instead of waiting on the server.
+
+**What you'll notice**
+
+- Fields are grouped into **Basic**, **LLM** and **Tools** sections rather than one long list.
+- Clearing a field while editing an agent — emptying the system prompt, deselecting every tool, or returning reasoning effort to the model default — now saves correctly. These previously reported success but kept the old value.
+- The form no longer rejects names, slugs or prompts that the service actually accepts.
+
+A new endpoint serves the tool catalogue to any client that needs to build a tool picker.
+
+## Claude Opus 5
+
+Agents can now run on **Claude Opus 5**, at the same price as Opus 4.8. Agents set to Opus 4.8 move over automatically and need no changes. Two long-standing errors in the Opus entry were also corrected — its maximum response length was understated by a wide margin, and file attachments were listed as unsupported when they work.
+
+## Performance
+
+- Startup is faster: agent definitions are now parsed with a native library, cutting that step from roughly 44ms to 2ms, and the work has been moved off the main request loop.
+- Several operations that could briefly block the service during startup and shutdown no longer do.
+
+## Maintenance
+
+- Python dependencies refreshed across the board, including the Redis client's first major release in some time. Connection timeouts are now set explicitly so the upgrade changes no behaviour.
+- Long-standing structural issues in the core module were resolved, restoring a clean bill of health from the project's static analysis and linting suite for the first time since mid-July.
+- Log records now identify which tool produced them; previously every tool logged under a shared name.
+- Fixed bugs in the activity notification, tool logging and agent configuration modules, and removed several pieces of dead code.
+
+# Release v2.30.1
+
+## Improvements
+
+- Refreshed all frontend dependencies to their latest compatible versions, including security patches: the image-processing library behind photo optimization was upgraded past several known vulnerabilities, and the dependency flaw flagged on the repository (a denial-of-service issue in a build-time tool) is resolved.
+- The management UI now runs on the latest Next.js and React patch releases for improved stability.
+
+# Release v2.30.0
+
+## New Features
+
+- Upgraded the Gemini model lineup: Gemini 3.6 Flash replaces Gemini 3.5 Flash as the default flash-tier model, and Gemini 3.5 Flash Lite replaces Gemini 3.1 Flash Lite as the lite-tier model. Both are available natively and via OpenRouter, and agents using the previous models switch over automatically — no configuration change needed.
+- Pricing follows the new models: Gemini 3.6 Flash produces output about 17% cheaper than its predecessor, while Gemini 3.5 Flash Lite costs slightly more than the old lite model (still the budget tier). Public agent templates and built-in web search now run on Gemini 3.6 Flash.
+
+## Improvements
+
+- Streamlined the agent management UI: the agent creation and editing pages now share one consistent form, and unused frontend code was removed for a lighter build.
+- Internal cleanup of legacy compatibility code, one-off migration scripts, and orphaned modules left over from earlier refactors.
+
+# Release v2.29.0
+
+## Improvements
+
+- Simplified the agent lifecycle: creating or updating an agent simply takes effect immediately. The leftover "deploy" wording from an older draft-based workflow is gone from agent tools, messages, and notifications, so assistants describe changes the way they actually work.
+- An agent's "last updated" time now reflects real edits only — routine background refreshes such as hourly account snapshots and asset caches no longer count. This keeps the Team Lead's view of recently active agents meaningful and avoids unnecessary periodic reinitialization of busy agents.
+- Internal cleanup of legacy code and a leftover database column from the retired draft system; the database schema updates itself automatically on upgrade.
+
+# Release v2.28.1
+
+## Improvements
+
+- When the Team Lead decides which agent should handle a request, it now considers the most recently updated agents first, so the agents you actively maintain stay front of mind on large teams.
+- Brand-new teams get a cleaner experience: the Team Lead now clearly knows the team has no agents yet, instead of looking for a roster that isn't there.
+
+# Release v2.28.0
+
+## Improvements
+
+- The Team Lead is now a noticeably more capable and proactive assistant. It understands how your team and its agents fit together, sees your team's own agents at a glance so it can hand a request straight to the right one, and takes ownership of your goal from start to finish rather than passing work off and stopping. When it delegates a task to another agent it now carries over the full context and relays any follow-up question back to you, so multi-step requests move along more smoothly.
+
+## Bug Fixes
+
+- Fixed an issue where a recent change to an agent's name or description could take a while to be reflected when the Team Lead was choosing which agent to hand a task to. Such edits now show up right away.
+
+# Release v2.27.4
+
+## Bug Fixes
+
+- Fixed web-enabled agents on OpenRouter models stalling mid-task. Certain models would occasionally emit their internal tool-call instructions as visible text instead of actually running the tool, leaving the task unfinished. These agents now use our own web search and page-reading tools, which run reliably across every model, so multi-step research and publishing flows complete as expected.
+
+# Release v2.27.3
+
+## Bug Fixes
+
+- Fixed a crash on the agent chat page ("Failed to load agent") that could occur while an agent streamed several updates in quick succession, such as live tool-call status frames. The chat now stays stable through rapid bursts of activity.
+- Follow-up messages in the same conversation now stream their replies live from the start; previously the beginning of a second reply could stay hidden until the response finished.
+
+# Release v2.27.2
+
+## Improvements
+
+- More reliable web-enabled agents: when a model's built-in web search or page-fetch briefly fails upstream, or a response is cut off in transit, the request is now retried automatically instead of surfacing as an error. Genuinely permanent failures — such as an exhausted usage limit — still stop right away, so real problems stay visible.
+- Routine maintenance: refreshed the underlying software dependencies to their latest compatible versions.
+
+# Release v2.27.1
+
+## Improvements
+
+- Smarter image storage: when an agent tries to persist an image that is already hosted on our CDN (for example, one it just generated), the existing link is now returned directly instead of downloading and uploading a duplicate copy. This eliminates wasted transfers and duplicate files in storage.
+
+# Release v2.27.0
+
+## New Features
+
+- Kimi K3 is now available: Moonshot's new flagship model with a 1M-token context window, image understanding, and deep reasoning, served exclusively through Moonshot's own infrastructure for consistent quality.
+
+## Improvements
+
+- Agents still configured with the older Kimi models (K2.6 and K2.7 Code) are automatically upgraded to Kimi K3 — no configuration change needed. K3 always reasons deeply before answering, so replies may be more thorough, and usage is billed at the new model's rates.
+
+# Release v2.26.3
+
+## Improvements
+
+- Fixed GPT image generation when running through OpenRouter: requests now go to the correct image endpoint, so `image_gpt` and `image_gpt_mini` work again without a native OpenAI key.
+- Publishing posts is more forgiving: an overlong URL slug no longer fails the whole request — it is now shortened automatically at a word boundary.
+
+# Release v2.26.2
+
+## Improvements
+
+- Significantly cheaper scheduled tasks: fixed an issue in the autonomous task module where each step of a run was billed as if the whole conversation were new, instead of reusing the AI provider's prompt cache. Long multi-step runs now cost a fraction of what they did, with no change in behavior.
+
+# Release v2.26.1
+
+## Improvements
+
+- More resilient replies: temporary AI provider hiccups — dropped connections, timeouts, rate limits, brief outages — are now retried automatically, including interruptions that happen midway through generating a response. When a request truly cannot be completed, the conversation now shows a proper error notice instead of occasionally recording the raw failure as if it were the agent's reply.
+- Faster long conversations: removed an ineffective context-trimming layer that added overhead to every reply and reduced caching efficiency in long threads. Long-history management is now handled entirely by the tiered history compression.
+
+# Release v2.26.0
+
+## Improvements
+
+- Task planning now runs only in live conversations, matching the interactive UI tools. Scheduled (cron) runs no longer build todo lists — they are single-shot and carry facts between runs via task memory — and delegated sub-agent runs keep leaving planning to the agent you are talking to. Chats with a real user watching keep the live checklist exactly as before.
+
+# Release v2.25.0
+
+## New Features
+
+- **Reasoning effort per agent**: agents can now set how much thinking their model does before answering — from none up to max — right next to the model choice. Leave it unset to use the model's recommended default. The setting automatically adapts to each model's real capabilities: models that can't turn thinking off run at their lightest level, and models with a simple on/off switch map your choice sensibly. The team lead can also configure this when creating or updating agents.
+
+## Improvements
+
+- **Model lineup cleanup**: retired the MiniMax M2 Her and Grok 4.20 models. Agents still using them switch automatically to MiniMax M3 and Grok 4.5 (Grok 4.5 is the newer model despite the smaller version number).
+- Fixed an issue where MiniMax M3 connected directly was not using its thinking mode.
+
+# Release v2.24.0
+
+## Improvements
+
+- **Task planning is now built in for every agent**: the per-agent "todo" toggle is gone. All agents — including the team lead — plan complex multi-step requests automatically, while delegated sub-agent runs still skip planning (the plan belongs to the agent you are talking to).
+- Removed the automatic tool picker that kicked in for agents with a very large tool list; agents now always work with their full set of tools directly.
+
+## Notes for operators
+
+- Predefined public agents will report a one-time "updated" during the next sync — their content fingerprint changed with the removed setting. No action needed.
+
+# Release v2.23.0
+
+## Improvements
+
+- **Models now run on provider-recommended settings**: manual tuning knobs (temperature and repetition penalties) are retired across agents and templates. Current-generation models are optimized for their providers' defaults — several reject or silently ignore manual values — so every model now runs the way its maker intended, with no configuration needed.
+- **Smarter reasoning control for DeepSeek**: DeepSeek models now switch thinking mode on or off exactly as configured, so the fast variant responds quicker and no longer spends hidden reasoning effort.
+- Fixed an invalid reasoning setting on the GPT-5.6 Luna model.
+
+# Release v2.22.0
+
+## New Features
+
+- **Nano Banana 2 Lite image model**: added Google's fastest and most affordable image generator to the image toolset — ideal for quick drafts and high-volume image workflows, at about half the price of Nano Banana 2.
+
+## Improvements
+
+- **Grok video upgraded to Imagine Video 1.5**: xAI's latest video model delivers steadier motion with clearer, better-synced speech and sound.
+- **Gemini image models moved to stable versions**: Nano Banana Pro, Nano Banana 2, and agent avatar generation now run on Google's production model releases instead of previews.
+- The China A-Share toolset now shows its own icon in the tool picker.
+- Fixed a performance issue where generating a Gemini image could briefly stall other conversations on the same server.
+
+# Release v2.21.0
+
+## New Features
+
+- **Smarter conversation memory**: long conversations are now compressed with a new in-house strategy that adapts to how active the chat is. Active conversations keep as much context as possible (and stay prompt-cache friendly); a chat resumed after hours or days is compacted more aggressively, cutting input cost and speeding up the first reply.
+- **Compression that keeps what matters**: instead of blindly trimming old messages, the agent now preserves the conversation's opening exchange and the most recent round in full, and replaces everything in between with an AI-written summary — so the agent still remembers how the conversation started and what was just said.
+- **Per-model tuning**: the compression thresholds (for active, recent, and idle conversations) can now be adjusted per model in the model catalog, with sensible defaults derived from each model's context window.
+
+## Improvements
+
+- Extremely long histories are now summarized reliably in stages, even when they exceed the summarizer model's own capacity.
+- A failed summarization no longer risks corrupting conversation history — the agent simply keeps the full history and retries later.
+- Fixed issues in the history compression module that could cause repeated re-summarization of the same conversation.
+
+# Release v2.20.0
+
+## New Features
+
+- **Task planning rebuilt**: agents with the todo feature enabled now reliably maintain a working plan for complex, multi-step requests. Plans stay accurate through very long conversations (the agent no longer loses sight of its list when older context is compacted away), a finished task's list is cleaned up automatically so it never leaks into the next request, and prompt-cache efficiency is preserved throughout.
+- **Visible plans everywhere**: web chat renders the plan as a live checklist with per-step states and a progress count. IM channels (Telegram, WeChat, Slack, Lark) show the checklist when a plan is created and a compact one-line progress note as steps complete.
+
+## Improvements
+
+- Fixed bugs in the todo module that could leave the planning tool entirely unavailable to the agent.
+- Sub-agent runs no longer carry their own todo lists — planning stays with the agent you are talking to. Scheduled (cron) runs keep full planning support.
+
+# Release v2.19.0
+
+## New Features
+
+- **Memory page**: a new "Memory" entry in the account area shows what your agents remember, split into Team Memory (shared with the whole team) and Your Memory (what each agent remembers about you personally). Entries are shown truncated — open one to read the full text rendered as Markdown, or edit it directly. Memories are managed automatically by your agents, so you normally don't need to read or change them. Available in both the bundled frontend and the team frontend.
+- **Memory API**: new endpoints to list and edit these memory documents (`/teams/{team_id}/memories` in the Team API, `/memories` in the local API), with size limits and per-user access control.
+
+## Improvements
+
+- **Long-term memory is always on**: memory now belongs to the conversation (team, user, channel, or cron task), not the agent, so the per-agent "Long-Term Memory" switch is gone. Agents skip the memory tool automatically in the few situations where it cannot work (sub-agent runs and anonymous visitors).
+- **Super mode removed**: every agent now runs with the higher execution step limit by default, so the per-agent "Super Mode" switch and badge are gone. The limit can still be tuned server-wide.
+- The lead agent's memory page entry shows the lead's real configured name and avatar.
+- Fixed minor issues in prompt assembly and memory loading performance.
+
+# Release v2.18.0
+
+## New Features
+
+- **One System Prompt**: the five separate prompt fields (Purpose, Personality, Principles, Knowledge Base, Advanced) are merged into a single "System Prompt" written in Markdown. It holds up to 200,000 characters and supports level-2+ headings, so you can structure the agent's role, personality, rules, and knowledge in one place, your way. Existing agents are migrated automatically — their old fields are stitched into the new prompt under matching section headings.
+- **Description is a first-class field**: the short public description is now edited right in the agent form instead of only through the publish flow. It appears in agent listings and search, and it is what other agents read when they delegate work to this one as a sub-agent. Agents that never set a description automatically inherit their old Purpose text.
+- **Team lead upgrades**: the lead's agent manager creates and updates agents with the new single system prompt and can set the description too, and its agent listings show the description consistently.
+
+## Improvements
+
+- All built-in public seed agents were converted to the new single-prompt format.
+- Avatar generation now handles very large prompts gracefully.
+- Internal cleanup of prompt assembly and validation logic.
+
+# Release v2.17.0
+
+## New Features
+
+- **All crypto tools under one roof**: the "Web3 Tools" section in the agent form now covers the entire crypto domain — market data, on-chain analytics, DeFi dashboards, and crypto news (Moralis, Dexscreener, CoinGecko, Dune, DeFiLlama, and more) join the wallet-operating tools there, instead of being scattered through the general tool list.
+- **Smarter wallet requirements**: only tools that actually operate on a team wallet still require the team to own one. Read-only crypto data and analytics tools no longer trigger wallet checks, no longer block wallet deletion, and no longer add wallet instructions to the agent's prompt.
+
+## Improvements
+
+- Internal cleanup of an unused agent editing flow and legacy migration scripts.
+
+# Release v2.16.0
+
+## Improvements
+
+- **Clearer model picker**: every model in the selection list now shows its provider as a small gray label on the right, and the selected model's provider is displayed in the closed selector too. The floating provider headers that could blend into the list while scrolling are gone.
+- The collapsed web3 toolset group in the agent form is now titled "Web3 Tools", matching what it actually contains.
+
+# Release v2.15.0
+
+## New Features
+
+- **Latest AI models**: the model catalog now offers the newest generation across providers — OpenAI GPT-5.6 (Sol, Terra, and Luna tiers), xAI Grok 4.5, Claude Sonnet 5, Qwen3.7 Plus, and GLM 5.2 — with up-to-date pricing and capability data.
+- **Seamless model upgrades**: retired models are now automatically routed to their successors. Existing agents configured with an older model keep working without any reconfiguration and transparently benefit from the newer model.
+- **Official model providers**: requests routed through OpenRouter are now pinned to each model's first-party provider, ensuring consistent quality and behavior.
+
+## Improvements
+
+- Each model series now keeps a single, current version in the catalog, making model selection simpler.
+- Agents created from the built-in templates and public agent gallery now use the latest models.
+- Fixed inaccurate pricing data and unavailable model identifiers in the model catalog module.
+
+# Release v2.14.1
+
+## Improvements
+
+- Fixed a database upgrade from the previous release that could fail to start the background services — including scheduled autonomous tasks — on deployments whose database was missing certain optional tables. The schema upgrade now applies safely regardless of which of those tables a database already has.
+
+# Release v2.14.0
+
+## New Features
+
+- Networks now follow wallets. Each team wallet carries its own default network, editable on the wallet page (Safe and Privy smart wallets stay on the chain they were deployed on). On-chain tools automatically operate on the network of the wallet they are called with, so one agent can work across several chains through different wallets. The agent-level network setting has been removed.
+- The agent create and edit forms are leaner: the model tuning parameters are gone, and all web3 toolsets are grouped under a collapsed "Advanced Settings" section that only appears when the team owns a wallet.
+
+## Improvements
+
+- Toolset rows in the agent form show a compact selected/total counter, and the toolset description expands together with the toolset.
+- The wallet management API's rename endpoint became a general update endpoint covering the name and the default network, with validation of the allowed networks.
+- Reduced redundant database lookups in the on-chain tool layer and fixed bugs in the OpenSea listing tools.
+
+# Release v2.13.0
+
+## New Features
+
+- Tool calls now report their status the moment they start. The chat stream sends a live frame as soon as the agent begins a tool call, so the web UI shows the agent's status line with a spinner right away — expanding a running call reveals its request parameters, and when the call finishes, the result folds into the same badge.
+- Telegram, WeChat, Slack, and Lark conversations get the status message at the start of the tool call instead of after it finished, so users see what the agent is doing while it works.
+
+## Improvements
+
+- Cancelled or interrupted conversations clean up their leftover "running" indicators automatically, and conversation history stays exactly as before — the live frames are never stored.
+- Fixed small inconsistencies in how non-streaming API responses assembled their message lists.
+
+# Release v2.12.0
+
+## New Features
+
+- Agents now narrate their tool use. Every tool call carries a short status line written by the agent in the user's own language — for example "Searching the web for the latest BTC news" — and the chat shows that line instead of the raw tool name. Expanding a tool call still reveals the tool name, parameters, and response for troubleshooting.
+- Telegram and WeChat conversations benefit too: the "Running tool..." notice now shows the agent's own description of what it is doing, and when several tools run at once, each one gets its own line.
+
+## Improvements
+
+- Older messages and tools without a status line keep the previous display, so existing conversations look the same as before.
+
+# Release v2.11.0
+
+## New Features
+
+- Linkable apps grew from 4 to 16: alongside Twitter/X, Notion, Gmail, and Supabase, teams can now link Outlook, Google Calendar, Google Docs, Sheets, Slides and Drive, LinkedIn, Airtable, Linear, GitHub, Jira, and Stripe.
+- Links now come in two levels. Team-level apps (GitHub, Notion, Stripe, and the rest) are linked once by an admin and shared by the whole team. Personal apps (Gmail, Outlook, Google Calendar, LinkedIn) are linked by each member for themselves — when the team lead agent talks to you, it acts on your own accounts, never a teammate's.
+- Every app carries category tags, and the Links page gained a search box and category filters, so the bigger catalog stays easy to navigate.
+
+## Improvements
+
+- The Links page is more compact: linking moved into each card's header, cards flow in a responsive grid, and apps are grouped into Personal and Team sections.
+- Personal accounts stay private — the page and the agent only ever see your own personal links; other members' accounts are invisible, even to admins.
+- Opening the Links page now refreshes the status of every linked account in the team, so an account that expired or was revoked shows up (and stops being used) sooner.
+- Fixed bugs in the linking flow and made permission errors clearer.
+
+# Release v2.10.0
+
+## New Features
+
+- Rich UI components (cards and clickable choice options) are now a built-in ability of every agent — nothing to enable in the tool picker anymore. Agents show them automatically wherever someone is actually watching the conversation: the web app, API clients, Telegram, WeChat, Lark, and Slack. Scheduled background runs and agent-to-agent delegation deliberately skip them, since there is no live user to click anything there.
+
+## Improvements
+
+- WeChat now displays card images as real pictures instead of dropping them; the rest of the card follows as text, which is the richest form WeChat's bot messaging supports.
+- Existing agents that had the UI components selected keep working unchanged — old configurations are accepted and tidied up automatically.
+
+# Release v2.9.0
+
+## New Features
+
+- Scoped long-term memory: an agent now keeps separate memory documents for the team using it, for each individual user it talks to, for each channel thread (Telegram, Slack, Lark, WeChat), and for each scheduled task — all maintained through a single memory tool. When different teams talk to the same public agent, each team's memory stays completely private to them.
+- Team wallet management: wallets can now be renamed and deleted, and Safe wallets' token spending limits adjusted, through new admin APIs. Deleting a team's last wallet is refused while agents still have on-chain tools configured, so an agent can never be left stranded.
+- Guests talking to a published agent now get its full read-side abilities — recent posts and activities, sub-agent delegation, on-chain data lookups, and personal memory — while publishing content, signing transactions, and anything else that acts with the agent's identity stays strictly reserved for the owning team, enforced both when tools are offered and again when they execute.
+- Publishing rules now keep delegation consistent: an agent can only be published when every sub-agent it uses is public too, and an agent that a public agent depends on cannot be hidden, archived, or deleted while the reference stands.
+
+## Improvements
+
+- Scheduled (autonomous) tasks no longer carry conversation history between runs. Every run starts fresh — dramatically cutting token costs for long-lived tasks — and tasks record the facts they need across runs in their own task memory instead.
+- All costs incurred by delegated sub-agent work are billed to the account that started the conversation, no matter how deep the delegation chain goes.
+- The tool catalog is now derived directly from the code instead of separate schema files, so tool pickers, validation, and the agent's own tool listing can never drift apart; toolsets that need a team wallet are now correctly hidden for teams without one.
+- Fixed bugs in the tool availability and agent visibility modules.
+
+# Release v2.8.0
+
+## New Features
+
+- Agents now always know which channel a conversation originally came from (web, Telegram, WeChat, Lark, Slack, or a scheduled task), even when the work is delegated through one or more sub-agents. Channel-specific behavior such as formatting rules now applies correctly to delegated agents at any depth.
+- Agents are now explicitly aware when they run as a sub-agent on behalf of another agent, and adjust their behavior accordingly — for example, sub-agents spawned by an autonomous task know they must complete the work without asking the user for input.
+
+## Improvements
+
+- Observability: traces are now labeled with the real entry channel instead of a generic internal marker, and delegated runs carry a dedicated sub-agent flag, making it much easier to filter and analyze multi-agent conversations.
+- Chat history records for delegated runs are now consistently attributed to the originating channel.
+
+# Release v2.7.2
+
+## Improvements
+
+- Updated third-party dependencies across the whole platform — backend, web console, and channel integrations — including fixes for two security advisories in underlying libraries.
+- Picked up upstream AI framework updates that improve tool-calling reliability across model providers and make conversation state handling more robust.
+
+# Release v2.7.1
+
+## Improvements
+
+- Database schema upgrades now run automatically when services start — deploying a new version no longer requires any manual migration step. Existing databases are adopted in place on their first start after this release, several services starting at the same time coordinate safely, and a service will refuse to start on a database it could not upgrade rather than run with a mismatched schema.
+
+# Release v2.7.0
+
+## New Features
+
+- Links: teams can now connect external app accounts — Twitter/X, Notion, Gmail, and Supabase — and the team lead agent gains the ability to act through them: read and send email, post to X, work with Notion pages, manage Supabase projects, and more. Connecting an account is always a standard OAuth authorization (users never copy API keys), accounts can be unlinked at any time, and when someone asks about an app that isn't linked yet, the lead points them to the Links page. Available in both the team API and the local single-user deployment.
+- Channels: Slack and Lark/Feishu join the team channel lineup — a team admin authorizes the official app into their own workspace with a single click. Telegram now runs through one official shared bot that groups join via a bind link, so teams no longer manage their own bot tokens.
+
+## Improvements
+
+- Database schema changes are now managed with Alembic migrations, making upgrades safer and more repeatable.
+- Release builds now ship ready-to-run images for the Lark and Slack channel services.
+
+# Release v2.6.9
+
+## Improvements
+
+- Team conversations are now private to each member. When working with a team agent, you see only your own chat threads, message history, and tool activity; conversations belonging to other team members are no longer shown or accessible. The shared default notification channel remains visible to the whole team.
+
+# Release v2.6.8
+
+## Improvements
+
+- Streamlined observability: agent run tracing now relies on a single platform (Langfuse). Support for the alternative tracing backend was removed to simplify configuration and reduce ongoing maintenance. No user-facing changes.
+
+# Release v2.6.7
+
+## New Features
+
+- Chat conversations now show friendly time markers between messages: a small timestamp appears after a pause or when the day changes (for example "Yesterday 15:12"), and hovering over a message's avatar reveals its exact time.
+
+# Release v2.6.6
+
+## Bug Fixes
+
+- Fixed a billing issue in agent-to-agent delegation: when an agent handed a task off to another agent, the cost of that delegated work was not charged back to the team paying for the conversation (and, with billing enabled, could even prevent the delegated task from running). Delegated work is now correctly billed to the caller's account.
+
+# Release v2.6.5
+
+## Improvements
+
+- Maintenance release: refreshed dependencies across the whole platform — the Python backend, the Go channel integrations, and the web frontend — to their latest compatible versions, with the internal code adjustments needed to stay current with those libraries. No user-facing changes.
+
+# Release v2.6.4
+
+## Improvements
+
+- Observability traces (Langfuse) now show a readable name — the agent's name and its owning team — instead of the raw agent id, and carry richer filterable details: agent and team display names, the caller's team for public agents (with an external-caller flag), visibility, and tags. No user-facing changes.
+
+## Bug Fixes
+
+- Fixed the test suite still sending traces to the observability backend (Langfuse): the earlier fix was undone by environment reloading, so test/local data kept appearing. Tests now reliably emit nothing.
+
 # Release v2.6.3
 
 ## Improvements

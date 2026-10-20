@@ -5,7 +5,7 @@ from typing import Any, override
 from langchain_core.tools import ArgsSchema
 from pydantic import BaseModel, Field
 
-from .base import AcpBaseTool, acp_request, validate_url
+from .base import AcpBaseTool, acp_request
 
 
 class AcpGetCheckoutInput(BaseModel):
@@ -22,6 +22,7 @@ class AcpGetCheckout(AcpBaseTool):
     """Get the current status of an ACP checkout session."""
 
     name: str = "acp_get_checkout"
+    title: str = "Get Checkout Status"
     description: str = (
         "Get the current status of an ACP checkout session. "
         "Returns session details including status, items, total, and tx_hash."
@@ -36,7 +37,6 @@ class AcpGetCheckout(AcpBaseTool):
         timeout: float = 30.0,
         **_: Any,
     ) -> str:
-        validate_url(merchant_url)
         url = f"{merchant_url.rstrip('/')}/checkout_sessions/{session_id}"
         response = await acp_request("GET", url, timeout=timeout)
 

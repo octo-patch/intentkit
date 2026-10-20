@@ -26,8 +26,6 @@ class FetchHistoricalTVLInput(BaseModel):
     global TVL data across all chains.
     """
 
-    pass
-
 
 class FetchHistoricalTVLResponse(BaseModel):
     """Response schema for historical TVL data."""
@@ -55,6 +53,7 @@ class DefiLlamaFetchHistoricalTvl(DefiLlamaBaseTool):
     """
 
     name: str = "defillama_fetch_total_historical_tvl"
+    title: str = "Fetch Historical TVL"
     description: str = FETCH_TOTAL_HISTORICAL_TVL_PROMPT
     args_schema: ArgsSchema | None = FetchHistoricalTVLInput
 

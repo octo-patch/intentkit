@@ -8,26 +8,27 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 
 @pytest.mark.bdd
-async def test_create_agent_rejects_invalid_toolset():
+async def test_create_agent_rejects_unknown_tool_name():
     agent = AgentCreate(
         id="test-tool-val-1",
         name="Tool Test",
         model="gpt-4o-mini",
-        tools={"nonexistent": {"enabled": True, "states": {"x": "public"}}},
+        tools=["nonexistent_tool"],
     )
-    with pytest.raises(IntentKitAPIError, match="nonexistent"):
+    with pytest.raises(IntentKitAPIError, match="nonexistent_tool"):
         await create_agent(agent)
 
 
 @pytest.mark.bdd
-async def test_create_agent_rejects_invalid_tool_name():
+async def test_create_agent_rejects_fake_tool_in_known_category():
+    # Name uses a real category prefix ("http_") but is not a real tool.
     agent = AgentCreate(
         id="test-tool-val-2",
         name="Tool Test",
         model="gpt-4o-mini",
-        tools={"ui": {"enabled": True, "states": {"fake_tool": "public"}}},
+        tools=["http_fake_tool"],
     )
-    with pytest.raises(IntentKitAPIError, match="fake_tool"):
+    with pytest.raises(IntentKitAPIError, match="http_fake_tool"):
         await create_agent(agent)
 
 
@@ -37,8 +38,8 @@ async def test_create_agent_accepts_valid_tools():
         id="test-tool-val-3",
         name="Tool Test Valid",
         model="gpt-4o-mini",
-        tools={"ui": {"enabled": True, "states": {"ui_show_card": "public"}}},
+        tools=["http_get"],
     )
     created, _ = await create_agent(agent)
     assert created.tools is not None
-    assert created.tools["ui"]["states"]["ui_show_card"] == "public"
+    assert "http_get" in created.tools

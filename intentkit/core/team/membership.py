@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import or_, update
 
@@ -376,7 +376,7 @@ async def join_team(code: str, user_id: str) -> Team:
     return team
 
 
-async def _get_member_role(db: "AsyncSession", team_id: str, user_id: str) -> TeamRole:
+async def _get_member_role(db: AsyncSession, team_id: str, user_id: str) -> TeamRole:
     """Get member's role or raise ValueError if not found."""
     from sqlalchemy import select
 
@@ -391,7 +391,7 @@ async def _get_member_role(db: "AsyncSession", team_id: str, user_id: str) -> Te
     return TeamRole(role.value if hasattr(role, "value") else str(role))
 
 
-async def _ensure_not_last_owner(db: "AsyncSession", team_id: str) -> None:
+async def _ensure_not_last_owner(db: AsyncSession, team_id: str) -> None:
     """Raise ValueError if there is only one owner left."""
     from sqlalchemy import func, select
 
@@ -483,7 +483,7 @@ async def remove_member(team_id: str, user_id: str) -> None:
     await _invalidate_role_cache(team_id, user_id)
 
 
-async def get_members(team_id: str) -> list["TeamMember"]:
+async def get_members(team_id: str) -> list[TeamMember]:
     """Get all members of a team, including user profile info."""
     from sqlalchemy import select
 
@@ -523,7 +523,9 @@ async def check_permission(team_id: str, user_id: str, required_role: TeamRole) 
     # Try cache first
     user_role_str: str | None = None
     try:
-        user_role_str = await redis.get(cache_key)
+        # decode_responses=True, so values come back as str; redis-py 8's
+        # overloads widen this to `bytes | str` because they cannot see the flag.
+        user_role_str = cast(str | None, await redis.get(cache_key))
     except Exception as e:
         logger.warning(
             "Redis cache read failed for role %s:%s: %s", team_id, user_id, e

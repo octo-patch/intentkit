@@ -3,6 +3,7 @@
 Standalone FastAPI application for team-scoped endpoints.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -37,11 +38,14 @@ from app.team import (
     team_chat_router,
     team_content_router,
     team_lead_router,
+    team_link_router,
     team_management_router,
+    team_memory_router,
     team_public_router,
     team_share_router,
     team_usage_router,
     team_user_router,
+    team_wallet_router,
     team_wechat_router,
 )
 
@@ -71,7 +75,9 @@ async def lifespan(app: FastAPI):
         ssl=config.redis_ssl,
     )
 
-    ensure_bucket_exists_and_public()
+    # Synchronous and may sleep while waiting for the object store to come
+    # up, so run it off the event loop.
+    await asyncio.to_thread(ensure_bucket_exists_and_public)
 
     await ensure_system_user_and_team()
 
@@ -83,6 +89,12 @@ async def lifespan(app: FastAPI):
 
     await ensure_public_agent_prerequisites()
     await sync_public_agents()
+
+    # Warm the tool catalog off the event loop: the first build imports every
+    # toolset module (seconds) and must not stall the first request.
+    from intentkit.core.agent.tool_registry import warm_tool_registry
+
+    await asyncio.to_thread(warm_tool_registry)
 
     logger.info("Team API server start")
     yield
@@ -126,9 +138,12 @@ _ = app.include_router(team_autonomous_router)
 _ = app.include_router(team_chat_router)
 _ = app.include_router(team_content_router)
 _ = app.include_router(team_lead_router)
+_ = app.include_router(team_link_router)
 _ = app.include_router(team_management_router)
+_ = app.include_router(team_memory_router)
 _ = app.include_router(team_usage_router)
 _ = app.include_router(team_user_router)
+_ = app.include_router(team_wallet_router)
 _ = app.include_router(team_public_router)
 _ = app.include_router(team_share_router)
 _ = app.include_router(team_wechat_router)
