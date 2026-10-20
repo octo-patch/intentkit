@@ -149,6 +149,7 @@
   intelligence: 5
   speed: 4
   supports_image_input: true
+  supports_audio_input: false
   supports_video_input: true
   reasoning_effort: "max"
   reasoning_levels: ["low", "medium", "high", "xhigh", "max"]
@@ -884,6 +885,7 @@
   intelligence: 5
   speed: 4
   supports_image_input: true
+  supports_audio_input: false
   supports_video_input: true
   reasoning_effort: "max"
   reasoning_levels: ["low", "medium", "high", "xhigh", "max"]

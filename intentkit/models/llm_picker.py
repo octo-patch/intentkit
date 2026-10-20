@@ -260,9 +260,17 @@ def pick_long_context_model() -> str:
 
 
 def list_available_model_ids() -> list[str]:
-    """Return the sorted, distinct model IDs available in this deployment.
+    """Return distinct model IDs, alphabetically except MiniMax Flash before M3.
 
     Reflects the providers configured at process start (``AVAILABLE_MODELS``),
     which is fixed for the lifetime of a deployment.
     """
-    return sorted({model.id for model in AVAILABLE_MODELS.values() if model.selectable})
+    ids = sorted({model.id for model in AVAILABLE_MODELS.values() if model.selectable})
+    for flash, m3 in (
+        ("minimax-flash", "minimax"),
+        ("minimax/minimax-flash:free", "minimax/minimax"),
+    ):
+        if flash in ids and m3 in ids:
+            first, second = sorted((ids.index(flash), ids.index(m3)))
+            ids[first], ids[second] = flash, m3
+    return ids

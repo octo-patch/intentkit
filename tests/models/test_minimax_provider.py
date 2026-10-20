@@ -90,6 +90,7 @@ def test_catalog_prices_capabilities_and_order(catalog):
         Decimal("0.015"),
     )
     assert flash.supports_image_input and flash.supports_video_input
+    assert not flash.supports_audio_input
     assert flash.cost_usd(1_000_000, 1_000_000, 100_000) == Decimal("0.7365")
     gateway = [
         m
@@ -112,6 +113,10 @@ def test_catalog_prices_capabilities_and_order(catalog):
 @pytest.mark.asyncio
 async def test_hidden_legacy_remains_explicitly_routable(catalog):
     choices = llm_picker.list_available_model_ids()
+    assert choices.index("minimax-flash") < choices.index("minimax")
+    assert choices.index("minimax/minimax-flash:free") < choices.index(
+        "minimax/minimax"
+    )
     for model_id in ("MiniMax-M2.7", "minimax/minimax-m2-her"):
         assert model_id not in choices
         assert model_id not in [m.id for m in await llm.LLMModelInfo.get_all()]
@@ -270,6 +275,43 @@ async def test_gateway_tools_images_and_reasoning_history(catalog, wire):
     assert body["messages"][1]["tool_calls"][0]["id"] == "call_test"
     assert body["messages"][2]["tool_call_id"] == "call_test"
     assert body["tools"][0]["function"]["name"] == "lookup"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_id", ["minimax/minimax", "minimax/minimax-m2-her"])
+async def test_saved_gateway_wire_ids(catalog, wire, model_id):
+    adapter = await llm.create_llm_model(model_id)
+    model = await adapter.create_instance()
+    await model.ainvoke("hello")
+    expected = "minimax/minimax-m3" if model_id == "minimax/minimax" else model_id
+    assert wire[-1][1]["model"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+async def test_custom_compatible_model_preserved(catalog, wire, monkeypatch, protocol):
+    prefix = protocol + "_compatible"
+    base_url = "https://custom.example/" + (
+        "v1" if protocol == "openai" else "anthropic"
+    )
+    for suffix, value in (
+        ("api_key", "test-custom-key"),
+        ("base_url", base_url),
+        ("model", "MiniMax-private-saved"),
+    ):
+        monkeypatch.setattr(llm.config, prefix + "_" + suffix, value)
+    models = llm.load_default_llm_models()
+    monkeypatch.setattr(llm, "AVAILABLE_MODELS", models)
+    monkeypatch.setattr(llm, "_MODEL_ID_INDEX", llm.build_model_id_index(models))
+    adapter = await llm.create_llm_model("MiniMax-private-saved")
+    model = await adapter.create_instance()
+    await model.ainvoke("hello")
+    url, body = wire[-1]
+    assert url == base_url + (
+        "/chat/completions" if protocol == "openai" else "/v1/messages"
+    )
+    assert body["model"] == "MiniMax-private-saved"
+    assert "output_config" not in body
 
 
 @pytest.mark.parametrize("legacy", [True, False])
