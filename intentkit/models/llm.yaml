@@ -930,6 +930,7 @@
   api_id: "MiniMax-M3"
   name: "MiniMax M3"
   provider: minimax
+  legacy_ids: ["minimax:MiniMax-M3"]
   enabled: true
   input_price: "0.3"
   cached_input_price: "0.06"

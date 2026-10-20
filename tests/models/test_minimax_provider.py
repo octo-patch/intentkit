@@ -178,7 +178,9 @@ async def test_flash_rejects_unsupported_effort_before_http(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model_id", ["minimax", "MiniMax-M3", "MiniMax-M2.7"])
+@pytest.mark.parametrize(
+    "model_id", ["minimax", "MiniMax-M3", "minimax:MiniMax-M3", "MiniMax-M2.7"]
+)
 @pytest.mark.parametrize("effort", [None, "none", "high"])
 async def test_saved_models_keep_wire_id_and_no_effort_depth(
     catalog, wire, model_id, effort
@@ -187,7 +189,9 @@ async def test_saved_models_keep_wire_id_and_no_effort_depth(
     model = await adapter.create_instance()
     await model.ainvoke("hello")
     body = wire[-1][1]
-    assert body["model"] == ("MiniMax-M3" if model_id == "minimax" else model_id)
+    assert body["model"] == (
+        "MiniMax-M2.7" if model_id == "MiniMax-M2.7" else "MiniMax-M3"
+    )
     assert "output_config" not in body
     if model_id == "MiniMax-M2.7":
         assert "thinking" not in body
