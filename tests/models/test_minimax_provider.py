@@ -51,6 +51,7 @@ def wire(monkeypatch):
                 response = {
                     "id": "chatcmpl_test",
                     "object": "chat.completion",
+                    "system_fingerprint": None,
                     "created": 0,
                     "model": body["model"],
                     "choices": [
